@@ -52,7 +52,11 @@ class OpenAIRealtimeProvider(VoiceProvider):
         audio_flush: Callable[[], None] | None = None,
         model: str = "gpt-realtime-2.1",
         voice: str = "alloy",
-        transcribe_model: str = "gpt-4o-mini-transcribe",
+        # Input transcription. Note that session.update accepts any model name and
+        # only fails later, per item, with
+        # conversation.item.input_audio_transcription.failed, so a model your
+        # project cannot access shows up as an empty transcript rather than an error.
+        transcribe_model: str = "gpt-4o-transcribe",
         turn_detection: dict | None = None,
         tools: list | None = None,
         on_log=None,
@@ -234,6 +238,11 @@ class OpenAIRealtimeProvider(VoiceProvider):
             self._user_tx(msg.get("delta", ""), False)
         elif t == "conversation.item.input_audio_transcription.completed":
             self._user_tx(msg.get("transcript", ""), True)
+        elif t == "conversation.item.input_audio_transcription.failed":
+            # Do not let this fail silently: the user's panel would just stay
+            # empty while the agent keeps answering normally.
+            err = msg.get("error") or {}
+            self._log("error", f"input transcription failed: {err.get('message', err)}")
 
         elif t in ("response.output_audio_transcript.delta", "response.audio_transcript.delta"):
             self._agent_tx(msg.get("delta", ""), False)
@@ -250,9 +259,15 @@ class OpenAIRealtimeProvider(VoiceProvider):
         return self._nudge_resp_id is not None and response.get("id") == self._nudge_resp_id
 
     def _send(self, obj: dict) -> None:
-        if not self._loop or not self._ws:
+        # Mic frames arrive on the audio thread, so the transport loop can be gone
+        # by the time we get here (session closed, or the host preempted the
+        # process). Drop the frame instead of raising into the audio callback.
+        if not self._loop or not self._ws or self._loop.is_closed():
             return
-        asyncio.run_coroutine_threadsafe(self._ws.send(json.dumps(obj)), self._loop)
+        try:
+            asyncio.run_coroutine_threadsafe(self._ws.send(json.dumps(obj)), self._loop)
+        except RuntimeError:
+            self.closed.set()
 
     def _user_tx(self, text: str, final: bool) -> None:
         if self.h.on_user_transcript:

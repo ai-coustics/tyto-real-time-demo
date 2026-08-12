@@ -69,6 +69,7 @@ class LiveTytoScorer:
         self._window_samples = 0
 
         self._lock = threading.Lock()
+        self._warm = False  # has a score been emitted since the last reset?
         self._buffered = 0  # real samples since the last reset (warm-up gate)
         self._residual = np.empty(0, dtype=np.float32)  # leftover < one block
         self._scoring = True
@@ -145,6 +146,10 @@ class LiveTytoScorer:
             self._buffered = 0
             self._residual = np.empty(0, dtype=np.float32)
             self._scoring = True
+            self._warm = False
+        # Say so: until a full fresh window is buffered there are no new scores,
+        # and a UI still reading "scoring" just looks frozen.
+        self._emit_state("warming", "re-warming - keep talking")
 
     @property
     def scoring(self) -> bool:
@@ -173,7 +178,6 @@ class LiveTytoScorer:
     # -- internals ---------------------------------------------------------- #
 
     def _loop(self) -> None:
-        first = True
         while not self._stop.wait(self._hop_seconds):
             with self._lock:
                 ready = self._scoring and self._buffered >= self._window_samples
@@ -186,8 +190,8 @@ class LiveTytoScorer:
                 continue
             raw = Scores.from_result(result)
             self._smoothed = raw.ema(self._smoothed, self._ema_alpha)
-            if first:
-                first = False
+            if not self._warm:
+                self._warm = True
                 self._emit_state("live", "scoring")
             if self.on_scores:
                 self.on_scores(self._smoothed)

@@ -53,8 +53,14 @@ LABELS = {
 
 # Tuned constants. Keep these identical across branches for comparability.
 WINDOW_SECONDS = 5.0  # Tyto's analysis window is fixed at 5 s by the model.
-HOP_SECONDS = 2.0  # How often we read a new score (UI/decision cadence).
-SCORE_EMA_ALPHA = 0.3  # Smoothing of successive analyze() reads (docs recommend 0.3).
+# How often we slide that window and read a new score (UI + decision cadence).
+# Tyto 1.1 analyses a window in about 100 ms, roughly a quarter of what 1.0
+# needed, so a 1 s hop costs ~10% of one core and the UI moves visibly.
+HOP_SECONDS = 1.0
+# Smoothing of successive analyze() reads; the docs recommend 0.3. Note that 0.3
+# at a 1 s hop takes about as long to cross the nudge gate as the old 0.5 at a
+# 2 s hop, so the extra points do not make the agent quicker to nudge.
+SCORE_EMA_ALPHA = 0.3
 
 
 @dataclass(frozen=True)

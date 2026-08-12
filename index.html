@@ -112,6 +112,18 @@
       font-weight: 400
     }
 
+    .topbar .brand .ver {
+      font-family: var(--font-mono, ui-monospace, monospace);
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: .04em;
+      color: var(--color-accent);
+      border: 1px solid var(--color-accent);
+      border-radius: 999px;
+      padding: 1px 6px;
+      opacity: .85
+    }
+
     .topbar nav {
       display: inline-flex;
       align-items: center;
@@ -898,7 +910,7 @@
   <div class="glow"></div>
   <header class="topbar">
     <a class="brand" href="https://ai-coustics.com" target="_blank" rel="noopener">
-      <span class="mark"></span>Tyto<span class="sub">— Audio Insights</span>
+      <span class="mark"></span>Tyto<span class="ver">1.1</span><span class="sub">— Audio Insights</span>
     </a>
     <nav>
       <button type="button" id="keys-btn" class="nav-btn">Enter keys</button>
@@ -1008,7 +1020,7 @@
     // (Tyto 1.1) and posts a score dict every hop. Tyto's analysis window is
     // fixed at 5 s; the hop just sets the UI cadence.
     let TYTO_WINDOW_S = 5;
-    let TYTO_HOP_MS = 2000;
+    let TYTO_HOP_MS = 1000;
     const TAP_RATE = 16000;              // mic tap → mono float32 chunks to the worker
     const SERIES_HISTORY_MS = 30000;
 
@@ -1351,7 +1363,7 @@
           this._send({
             type: "session.update", session: {
               type: "realtime", instructions,
-              audio: { input: { transcription: { model: "gpt-4o-mini-transcribe" }, turn_detection: turnDetection } },
+              audio: { input: { transcription: { model: "gpt-4o-transcribe" }, turn_detection: turnDetection } },
               tools, tool_choice: "auto",
             }
           });
@@ -1471,6 +1483,8 @@
       if (t.startsWith("tyto.nudge") || t.startsWith("tool.")) return "t-orange";
       if (t.startsWith("tyto.aware")) return "t-purple";
       if (t.startsWith("tyto.vad")) return "t-blue";
+      // A rejected transcription model only shows up per item, so make it loud.
+      if (t.includes("transcription.failed")) return "t-red";
       if (t.includes("transcript")) return "t-blue";
       if (t === "response.create" || t === "session.update") return "t-orange";
       if (t === "error" || t === "tyto.error") return "t-red";
@@ -1716,9 +1730,12 @@ registerProcessor("tap",Tap);`;
       if (!tytoWorker || shouldScore === workerScoring) return;
       workerScoring = shouldScore;
       tytoWorker.postMessage({ type: shouldScore ? "resume" : "pause" });
+      // A resume resets the analyzer, so there are no new scores until a fresh
+      // 5 s window is buffered. Say that instead of leaving the UI on "scoring".
+      if (shouldScore) setTytoState("warming", "re-warming — keep talking");
     }
     function onScores(raw, analyzeMs) {
-      if (!lastMetrics) setTytoState(null);   // first score in: Tyto is live
+      setTytoState(null);   // a score arrived: warm again, back to scoring
       emaMetrics = emaMetrics
         ? Object.fromEntries(Object.keys(raw).map(k => [k, SCORE_EMA_ALPHA * raw[k] + (1 - SCORE_EMA_ALPHA) * (emaMetrics[k] ?? raw[k])]))
         : { ...raw };

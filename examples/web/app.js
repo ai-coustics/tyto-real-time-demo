@@ -300,7 +300,7 @@ function onMessage(ev) {
     case "status": setStatus(m.state, m.label); break;
     case "tyto_state":
       if (m.state === "loading") setTytoState("loading", "loading Tyto model…");
-      else if (m.state === "warming") setTytoState("warming", "warming up - keep talking");
+      else if (m.state === "warming") setTytoState("warming", m.text || "warming up - keep talking");
       else if (m.state === "live") setTytoState(null);
       else if (m.state === "error") setTytoState("error", m.text || "Tyto error");
       log(`tyto.${m.state}`, m.text || ""); break;
