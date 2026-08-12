@@ -29,9 +29,10 @@ import numpy as np
 
 from .decision import HOP_SECONDS, SCORE_EMA_ALPHA, WINDOW_SECONDS, Scores
 
-# Model published on the ai-coustics artifact CDN. Same model family as the
-# browser demo (tyto-l-16khz), so scores are comparable.
-DEFAULT_MODEL = "tyto-l-16khz"
+# Model published on the ai-coustics artifact CDN. Same model as the browser
+# demo (Tyto 1.1), so scores are comparable. Needs aic-sdk 3.x: Tyto 1.1 ships as
+# model version 7 and older SDKs refuse it.
+DEFAULT_MODEL = "tyto-1.1-l-16khz"
 
 ScoresCallback = Callable[[Scores], None]
 StateCallback = Callable[[str, str], None]  # (state, human_text)
@@ -61,8 +62,7 @@ class LiveTytoScorer:
 
         # Audio config, filled in by start().
         self.sample_rate = 0
-        self.num_frames = 0
-        self.num_channels = 1
+        self.block_size = 0
 
         self._collector = None
         self._analyzer = None
@@ -88,10 +88,9 @@ class LiveTytoScorer:
         model = aic.Model.from_file(model_path)
 
         rate = self._requested_rate or model.get_optimal_sample_rate()
-        config = aic.ProcessorConfig.optimal(model, sample_rate=rate, num_channels=1)
+        config = aic.ProcessorConfig.optimal(model, sample_rate=rate)
         self.sample_rate = config.sample_rate
-        self.num_frames = config.num_frames
-        self.num_channels = config.num_channels
+        self.block_size = config.block_size
         self._window_samples = round(WINDOW_SECONDS * self.sample_rate)
 
         self._collector, self._analyzer = aic.analyzer_pair(model, self._license_key)
@@ -112,17 +111,18 @@ class LiveTytoScorer:
     def feed(self, mono: np.ndarray) -> None:
         """Buffer mono float32 audio of any length. Dropped while paused.
 
-        The SDK requires each ``buffer`` call to be exactly ``num_frames``, so we
-        accumulate a residual and emit fixed-size blocks (just like the browser
-        worker turns 128-sample worklet quanta into model-sized blocks).
+        The SDK requires each ``buffer`` call to be exactly ``block_size`` mono
+        samples, so we accumulate a residual and emit fixed-size blocks (just
+        like the browser worker turns 128-sample worklet quanta into model-sized
+        blocks).
         """
         with self._lock:
             if not self._scoring or self._collector is None:
                 return
             data = np.concatenate([self._residual, np.ascontiguousarray(mono, dtype=np.float32)])
-            offset, n = 0, self.num_frames
+            offset, n = 0, self.block_size
             while len(data) - offset >= n:
-                self._collector.buffer(data[offset : offset + n].reshape(1, n))
+                self._collector.buffer(data[offset : offset + n])
                 offset += n
                 self._buffered += n
             self._residual = data[offset:]
@@ -165,7 +165,7 @@ class LiveTytoScorer:
             samplerate=self.sample_rate,
             channels=1,
             dtype="float32",
-            blocksize=self.num_frames,
+            blocksize=self.block_size,
             callback=callback,
         ):
             self._stop.wait()

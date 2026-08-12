@@ -50,7 +50,7 @@ class OpenAIRealtimeProvider(VoiceProvider):
         audio_out: Callable[[bytes], None],
         audio_done: Callable[[], None] | None = None,
         audio_flush: Callable[[], None] | None = None,
-        model: str = "gpt-realtime",
+        model: str = "gpt-realtime-2.1",
         voice: str = "alloy",
         transcribe_model: str = "gpt-4o-mini-transcribe",
         turn_detection: dict | None = None,

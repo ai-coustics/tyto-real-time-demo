@@ -248,7 +248,7 @@ class TytoController:
             value = getattr(scores, key)
             if value < MIN_EXPLANATION_VALUE:
                 continue
-            low = THRESHOLDS.get(key, (0.30, 0.60))[0]
+            low = THRESHOLDS.get(key, (0.30, 0.50))[0]
             severity = max(0.0, value - low) / max(1 - low, 1e-6)
             if best is None or severity > best["severity"]:
                 best = {"key": key, "value": value, "severity": severity}

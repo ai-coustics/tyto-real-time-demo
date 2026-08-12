@@ -46,7 +46,7 @@ def make(**overrides):
 
     base = dict(
         risk_score=0.0, noise=0.0, speaker_reverb=0.0, speaker_loudness=0.0,
-        interfering_speech=0.0, media_speech=0.0, packet_loss=0.0,
+        interfering_speech=0.0, packet_loss=0.0, codec_degradation=0.0,
     )
     base.update(overrides)
     return Scores(**base)
@@ -62,8 +62,8 @@ def build():
 
 def test_aware_pushes_room_note_then_clears():
     provider, _, controller = build()
-    controller.on_scores(make(risk_score=0.7, media_speech=0.8))
-    assert any(k == "instructions" and "TV or radio" in v for k, v in provider.calls)
+    controller.on_scores(make(risk_score=0.7, interfering_speech=0.8))
+    assert any(k == "instructions" and "other voices" in v for k, v in provider.calls)
     provider.calls.clear()
     controller.on_scores(make(risk_score=0.1))  # clean again
     assert any(k == "instructions" for k in provider.kinds())  # instructions reset
@@ -79,7 +79,7 @@ def test_tuned_swaps_turn_detection_on_noise():
 
 def test_reactive_nudge_mutes_interrupts_and_dispatches():
     provider, scorer, controller = build()
-    controller.on_scores(make(risk_score=0.7, media_speech=0.8))
+    controller.on_scores(make(risk_score=0.7, interfering_speech=0.8))
     kinds = provider.kinds()
     assert "interrupt" in kinds and "nudge" in kinds
     assert controller.awaiting_nudge is True
@@ -88,7 +88,7 @@ def test_reactive_nudge_mutes_interrupts_and_dispatches():
 
 def test_nudge_lifecycle_resumes_listening():
     provider, scorer, controller = build()
-    controller.on_scores(make(risk_score=0.7, media_speech=0.8))
+    controller.on_scores(make(risk_score=0.7, interfering_speech=0.8))
     assert controller.awaiting_nudge
     # Agent starts speaking the nudge, then finishes with no audio left to play.
     controller.on_agent_speaking(True, nudge=True)
@@ -110,7 +110,7 @@ def test_scoring_pauses_while_agent_speaks():
 
 def test_audio_quality_snapshot_summarizes_top_issue():
     _, _, controller = build()
-    controller.on_scores(make(risk_score=0.7, media_speech=0.8))
+    controller.on_scores(make(risk_score=0.7, interfering_speech=0.8))
     snap = controller.audio_quality_snapshot()
     assert snap["verdict"] == "degraded"
-    assert snap["top_issue"]["key"] == "media_speech"
+    assert snap["top_issue"]["key"] == "interfering_speech"

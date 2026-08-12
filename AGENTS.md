@@ -15,7 +15,14 @@ comparable.
 
 Tyto returns, per fixed 5 second window: a **risk_score** (0..1, higher is
 worse) and six dimensions (`noise`, `speaker_reverb`, `speaker_loudness`,
-`interfering_speech`, `media_speech`, `packet_loss`).
+`interfering_speech`, `packet_loss`, `codec_degradation`).
+
+The current model is **Tyto 1.1** (`tyto-1.1-l-16khz`, model version 7), which
+needs aic-sdk 3.x on the Python side and `@ai-coustics/aic-sdk-wasm` 0.23.x in
+the browser. Coming from Tyto 1.0: the old `media_speech` dimension is folded
+into `interfering_speech` (competing speech, live or from a device),
+`codec_degradation` is new, and the risk score is recalibrated, so the docs'
+bands moved to <0.30 good / 0.30-0.50 warn / >0.50 bad.
 
 ## Architecture and data flow
 
@@ -23,7 +30,7 @@ worse) and six dimensions (`noise`, `speaker_reverb`, `speaker_loudness`,
  mic ──> LiveTytoScorer.feed() ──(aic-sdk Collector)──┐
                                                        │ every ~2s
                                           Analyzer.analyze_buffered()
-                                                       │  (smoothed, EMA 0.5)
+                                                       │  (smoothed, EMA 0.3)
                                                        v
  mic ──> provider.send_audio() ──> agent      TytoController.on_scores()
             (OpenAI Realtime)                          │
@@ -90,44 +97,59 @@ do not fake it. Implement what you can and document the gap in the README.
 These keep the demo correct and comparable across branches. Do not change them
 casually.
 
-- **Tuned constants are ground truth.** Window 5 s, hop ~2 s, EMA alpha 0.5,
-  the per-dimension thresholds, the nudge bands. They live in `decision.py` and
-  match the browser byte for byte. If you change one, change it in every branch
-  and say why.
+- **Tuned constants are ground truth.** Window 5 s, hop ~2 s, EMA alpha 0.3
+  (the value the Tyto docs recommend), the per-dimension thresholds, the nudge
+  bands. They live in `decision.py` and match the browser byte for byte. If you
+  change one, change it in every branch and say why.
 - **Warm-up gate.** Never score until a full fresh 5 s window has been buffered
   since the last reset. On resume after the agent speaks, reset the analyzer and
   re-warm. Stale audio must never skew a reading.
 - **Mute and pause while the agent speaks.** The mic is muted (no frames sent to
   the agent) and scoring is paused while the agent talks; both resume after.
-- **A nudge always needs a cause.** A high risk_score alone never nudges; one
-  dimension must dominate (`strongest_cause`).
+- **A nudge always needs a cause the user can act on.** A high risk_score alone
+  never nudges; one dimension must dominate (`strongest_cause`), and it must be
+  one with nudge text. `codec_degradation` deliberately has none: it is a
+  transport problem, so it feeds the Aware note (confirm names and numbers) but
+  is never spoken at the user.
 - **`speaker_loudness` and `speaker_reverb` are informational only.** Never
   colored as a problem, never named as a cause, never the reason for a nudge.
 
-## aic-sdk quick reference (verified against aic-sdk 2.4.0)
+## aic-sdk quick reference (verified against aic-sdk 3.1.0, core 0.23.0)
 
 ```python
 import aic_sdk as aic
-path = aic.Model.download("tyto-l-16khz", "./models")     # CDN, cached
+path = aic.Model.download("tyto-1.1-l-16khz", "./models")  # CDN, cached
 model = aic.Model.from_file(path)
 # streaming (live):
 collector, analyzer = aic.analyzer_pair(model, license_key)
-config = aic.ProcessorConfig.optimal(model, sample_rate=24000, num_channels=1)
+config = aic.ProcessorConfig.optimal(model, sample_rate=24000)
 collector.initialize(config)
-collector.buffer(np.zeros((1, config.num_frames), dtype=np.float32))  # exact num_frames
+collector.buffer(np.zeros(config.block_size, dtype=np.float32))  # 1D mono, exact block_size
 result = analyzer.analyze_buffered()   # rolling window; silence-padded if short
 analyzer.reset()                       # clears analyzer AND collector
 # result fields: risk_score, noise, speaker_reverb, speaker_loudness,
-#                interfering_speech, media_speech, packet_loss
+#                interfering_speech, packet_loss, codec_degradation
 ```
+
+What changed from the 2.x API this repo used before (all of it applies here):
+`num_frames` -> `block_size`, `ProcessorConfig` has no `num_channels` and
+buffers are 1D mono, `media_speech` -> `codec_degradation`,
+`get_optimal_num_frames` -> `get_optimal_block_size`, and the analyzer gained
+`terminate_session()`. Model ids are dotted (`tyto-1.1-l-16khz`) even though the
+CDN path is dashed.
 
 This demo is real-time only. (`aic.FileAnalyzer(model, key).analyze(...)` exists
 for offline batch scoring, but it is intentionally not part of this demo.)
 
-`Model.download` and `ProcessorConfig.optimal(..., sample_rate=24000)` are
-confirmed to work; only the licensed analysis steps need a real key.
+`Model.download`, `ProcessorConfig.optimal(..., sample_rate=24000)` and the
+`AnalysisResult` field names are confirmed against the installed package; only
+the licensed analysis steps need a real key.
 
 ## OpenAI Realtime event mapping (WebSocket, server-side)
+
+Model: `gpt-realtime-2.1` (both stacks). Input transcription stays on
+`gpt-4o-mini-transcribe`; `gpt-live-transcribe` is the newer option if you want
+it.
 
 | Concept | Outgoing / incoming |
 | --- | --- |
@@ -144,7 +166,7 @@ confirmed to work; only the licensed analysis steps need a real key.
 
 ```bash
 uv pip install -e ".[dev]"
-uv run pytest -q                 # 24 tests: decision layer + controller + scorer
+uv run pytest -q                 # 34 tests: decision layer + controller + scorer
 ```
 
 The unit tests need no SDK, key, or hardware. The end-to-end audio path needs an

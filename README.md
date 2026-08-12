@@ -12,6 +12,15 @@ This branch is the server-side sibling of the browser reference in
 Tyto scoring contract and the tuned constants are identical to that reference so
 behavior is comparable across stacks.
 
+Both stacks run **Tyto 1.1** (`tyto-1.1-l-16khz`) on `aic-sdk` 3.x in Python and
+`@ai-coustics/aic-sdk-wasm` 0.23.x in the browser, and talk to OpenAI's
+`gpt-realtime-2.1`. Tyto 1.1 keeps the same 5 s / 16 kHz mono contract as 1.0
+while being much smaller and faster, and it changes the metrics: the old
+background-media dimension is folded into `interfering_speech` (competing speech
+from anything, live or a device), `codec_degradation` is new, and the risk-score
+bands are now <0.30 good / 0.30-0.50 warn / >0.50 bad. Scores from 1.0 and 1.1
+are not directly comparable.
+
 ## What is in here
 
 Three things you can run:
@@ -49,8 +58,8 @@ split by job, mirroring the commented sections of the browser reference:
 
 You need an ai-coustics SDK license key from
 <https://developers.ai-coustics.com> (and an OpenAI key for the agent). The
-model (`tyto-l-16khz`) is downloaded from the ai-coustics CDN on first run into
-`./models`. Put your keys in a `.env`; everything loads it automatically.
+model (`tyto-1.1-l-16khz`) is downloaded from the ai-coustics CDN on first run
+into `./models`. Put your keys in a `.env`; everything loads it automatically.
 
 ```bash
 uv venv
@@ -98,9 +107,12 @@ All three, server-side, with the same tuned thresholds as the browser:
    patient `server_vad` profile (longer end-of-speech, higher threshold) when the
    room is noisy. Fully supported: OpenAI Realtime exposes `turn_detection`
    directly, so the same profiles as the browser apply.
-3. **Reactive** - when the smoothed risk crosses the threshold and one cause
-   dominates, the agent interrupts itself with a single spoken nudge, then
-   resumes. Fully supported via `response.cancel` plus a one-shot `response.create`.
+3. **Reactive** - when the smoothed risk crosses the threshold and one cause the
+   user can act on dominates, the agent interrupts itself with a single spoken
+   nudge, then resumes. Fully supported via `response.cancel` plus a one-shot
+   `response.create`. `codec_degradation` is deliberately excluded here: it is a
+   transport problem, so it only feeds the Aware note (confirm names and
+   numbers) instead of asking the user to fix their room.
 
 The `check_audio_quality` tool is wired as an OpenAI function tool, so the user
 can ask "how do I sound?" at any time.
@@ -118,7 +130,8 @@ can ask "how do I sound?" at any time.
   on the server.
 - **Verification.** The decision layer and controller state machine are covered
   by unit tests (`pytest`), the aic-sdk calls are verified against the installed
-  package (model download, config, analyzer pair), and the web server boot plus
+  package (Tyto 1.1 download, config and block size, and the `AnalysisResult`
+  field names the `Scores` contract mirrors), and the web server boot plus
   websocket session bridge are smoke tested. The live audio path needs your own
   keys, a mic, and a browser to exercise.
 

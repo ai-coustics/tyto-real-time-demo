@@ -31,7 +31,7 @@ import numpy as np
 from aiohttp import WSMsgType, web
 
 from tyto_voice.controller import CHECK_AUDIO_QUALITY_TOOL, TytoController
-from tyto_voice.decision import VAD_PROFILES
+from tyto_voice.decision import NUDGE_THRESHOLD_DEFAULT, VAD_PROFILES
 from tyto_voice.env import load_env
 from tyto_voice.openai_realtime import SAMPLE_RATE, OpenAIRealtimeProvider
 from tyto_voice.prompts import BASE_INSTRUCTIONS
@@ -153,7 +153,7 @@ class Session:
         elif t == "agent_playing" and self.controller:
             self.controller.on_agent_audio(bool(data.get("value")))
         elif t == "nudge_threshold" and self.controller:
-            self.controller.nudge_threshold = float(data.get("value", 0.5))
+            self.controller.nudge_threshold = float(data.get("value", NUDGE_THRESHOLD_DEFAULT))
 
     # -- controller UI updates -> browser ----------------------------------- #
 

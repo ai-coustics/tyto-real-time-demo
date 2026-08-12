@@ -115,7 +115,7 @@ def main() -> None:
             samplerate=scorer.sample_rate,
             channels=1,
             dtype="float32",
-            blocksize=scorer.num_frames,
+            blocksize=scorer.block_size,
             callback=mic_cb,
         ):
             provider.closed.wait()

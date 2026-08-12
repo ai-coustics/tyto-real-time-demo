@@ -16,3 +16,4 @@ venv/
 # Downloaded Tyto models
 models/
 *.aicmodel
+.gstack/
