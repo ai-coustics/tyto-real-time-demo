@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Tyto — Audio Insights</title>
+  <title>Tyto Audio Insights</title>
   <style>
     :root {
       --color-bg: #0F0F0F;
@@ -910,7 +910,7 @@
   <div class="glow"></div>
   <header class="topbar">
     <a class="brand" href="https://ai-coustics.com" target="_blank" rel="noopener">
-      <span class="mark"></span>Tyto<span class="ver">1.1</span><span class="sub">— Audio Insights</span>
+      <span class="mark"></span>Tyto<span class="ver">1.1</span><span class="sub">Audio Insights</span>
     </a>
     <nav>
       <button type="button" id="keys-btn" class="nav-btn">Enter keys</button>
@@ -988,7 +988,7 @@
     <div class="gate-card">
       <h2>Run the demo with your own keys</h2>
       <p class="gate-sub">This demo runs entirely in your browser. Your keys are stored only on this
-        device and sent straight to OpenAI and ai-coustics over HTTPS — they never reach any server of ours.</p>
+        device and sent straight to OpenAI and ai-coustics over HTTPS, and they never reach any server of ours.</p>
       <label class="gate-field">
         <span>OpenAI API key</span>
         <input type="password" id="k-openai" placeholder="sk-…" autocomplete="off" spellcheck="false">
@@ -1204,11 +1204,11 @@
     // Factual background on Tyto (grounded in the ai-coustics docs) so the agent
     // can act as an accurate Tyto guide, not just a generic assistant.
     const TYTO_BACKGROUND =
-      "Background on Tyto — the model powering this demo — so you can be an accurate guide to it:\n" +
+      "Background on Tyto, the model powering this demo, so you can be an accurate guide to it:\n" +
       "• What it is: Tyto is a lightweight audio-insight model from ai-coustics, built for voice AI. " +
       "It listens to the audio flowing from a human into a voice AI stack and predicts whether that " +
       "audio will cause failures in downstream models (voice activity detection, turn-taking, " +
-      "speech-to-text, speech-to-speech) — and why. It runs on CPU, on-premise, with no audio leaving " +
+      "speech-to-text, speech-to-speech), and why. It runs on CPU, on-premise, with no audio leaving " +
       "your infrastructure; in this demo it runs entirely in your browser via the ai-coustics WASM SDK, " +
       "scoring your microphone live. This demo runs Tyto 1.1, the current version: same 5 second windows " +
       "of 16 kHz mono audio as the first release, but much smaller and faster (roughly 100 ms per window " +
@@ -1219,7 +1219,7 @@
       "speaker loudness (a neutral level meter, not a problem), interfering speech (competing voices, " +
       "whether live people nearby or a TV or radio playing), packet loss, and codec degradation " +
       "(compression artifacts from a low-bitrate or narrowband codec carrying the call).\n" +
-      "• Where you'd use it: any voice AI product where bad input audio breaks things — voice agents, " +
+      "• Where you'd use it: any voice AI product where bad input audio breaks things: voice agents, " +
       "call centers, drive-throughs, IVR, consumer assistants. In real time the agent can adapt mid-call " +
       "(warn the user, switch to manual turn-taking, disable barge-in, ask them to quieten their " +
       "surroundings, or relax end-of-speech timeouts on packet loss). Offline you can score 100% of calls " +
@@ -1228,7 +1228,7 @@
       "• Noise, interfering speech and reverb are things the speaker can usually fix; packet loss and codec " +
       "degradation are transport problems, so there the right move is to confirm names, numbers and " +
       "addresses rather than ask the user to change their room.\n" +
-      "• This demo: real-time use — Tyto scores your mic and the agent adapts on three layers. Aware: it " +
+      "• This demo: real-time use. Tyto scores your mic and the agent adapts on three layers. Aware: it " +
       "factors your room into every reply. Tuned: it retunes turn-taking in noise. Reactive: it nudges you " +
       "when one issue dominates.\n" +
       "• Getting started: docs are at docs.ai-coustics.com, and SDK license keys come from the developer " +
@@ -1236,7 +1236,7 @@
 
     const BASE_INSTRUCTIONS =
       "You are the witty, upbeat host of the Tyto demo, and a knowledgeable guide to Tyto. " +
-      "This is a voice conversation, so keep every reply short and natural — a sentence or two, never a monologue. " +
+      "This is a voice conversation, so keep every reply short and natural, a sentence or two, never a monologue. " +
       "OPEN THE CONVERSATION YOURSELF: greet the user warmly in one breath, tell them in a half-sentence that " +
       "Tyto is listening to their mic to judge how well a voice AI would hear them, and then give them ONE fun, " +
       "neutral prompt that gets them talking out loud for a minute or two (Tyto needs a steady stream of speech " +
@@ -1307,8 +1307,8 @@
     // The Tyto control layers (Aware / Tuned / Reactive) talk to the voice agent
     // only through this interface, so supporting another backend (ElevenLabs, a
     // cascaded STT→LLM→TTS stack, …) means writing one more class with the same
-    // shape. Everything OpenAI-Realtime-specific — WebRTC, the event schema, the
-    // session.update / response.create envelopes — lives here and nowhere else.
+    // shape. Everything OpenAI-Realtime-specific (WebRTC, the event schema, the
+    // session.update / response.create envelopes) lives here and nowhere else.
     //
     // Commands (app → provider):
     //   connect({ micStream, instructions, turnDetection, tools }) → Promise
@@ -1712,9 +1712,9 @@ registerProcessor("tap",Tap);`;
       setTytoState("loading", "loading Tyto model…");
       tytoWorker.onmessage = (e) => {
         const m = e.data;
-        if (m.type === "ready") { log("tyto.ready", { model: m.modelId, sdk: m.sdkVersion, window_s: TYTO_WINDOW_S, hop_s: TYTO_HOP_MS / 1000 }); setTytoState("warming", "warming up — keep talking"); }
+        if (m.type === "ready") { log("tyto.ready", { model: m.modelId, sdk: m.sdkVersion, window_s: TYTO_WINDOW_S, hop_s: TYTO_HOP_MS / 1000 }); setTytoState("warming", "warming up, keep talking"); }
         else if (m.type === "scores") onScores(m.scores, m.analyzeMs);
-        else if (m.type === "error") { log("tyto.error", { message: m.message }); setTytoState("error", "Tyto error — check your key"); }
+        else if (m.type === "error") { log("tyto.error", { message: m.message }); setTytoState("error", "Tyto error, check your key"); }
       };
       tytoWorker.postMessage({
         type: "init", licenseKey: KEYS.license, modelUrl: TYTO_MODEL_URL,
@@ -1732,7 +1732,7 @@ registerProcessor("tap",Tap);`;
       tytoWorker.postMessage({ type: shouldScore ? "resume" : "pause" });
       // A resume resets the analyzer, so there are no new scores until a fresh
       // 5 s window is buffered. Say that instead of leaving the UI on "scoring".
-      if (shouldScore) setTytoState("warming", "re-warming — keep talking");
+      if (shouldScore) setTytoState("warming", "re-warming, keep talking");
     }
     function onScores(raw, analyzeMs) {
       setTytoState(null);   // a score arrived: warm again, back to scoring

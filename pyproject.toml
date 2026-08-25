@@ -14,7 +14,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The terminal voice agent adds the OpenAI Realtime WebSocket client.
+# The voice agent adds a WebSocket client, used for the Deepgram speak socket
+# (and by the alternative OpenAI Realtime provider). Inkling and Deepgram STT go
+# over plain urllib, so they add nothing.
 agent = ["websockets>=13"]
 # The browser demo adds the web server.
 web = ["websockets>=13", "aiohttp>=3.9"]

@@ -54,13 +54,28 @@ LABELS = {
 # Tuned constants. Keep these identical across branches for comparability.
 WINDOW_SECONDS = 5.0  # Tyto's analysis window is fixed at 5 s by the model.
 # How often we slide that window and read a new score (UI + decision cadence).
-# Tyto 1.1 analyses a window in about 100 ms, roughly a quarter of what 1.0
-# needed, so a 1 s hop costs ~10% of one core and the UI moves visibly.
-HOP_SECONDS = 1.0
-# Smoothing of successive analyze() reads; the docs recommend 0.3. Note that 0.3
-# at a 1 s hop takes about as long to cross the nudge gate as the old 0.5 at a
-# 2 s hop, so the extra points do not make the agent quicker to nudge.
+# The window cannot be shortened, but it can be slid faster, and the hop is what
+# the demo actually feels: it sets how quickly the meters move and how quickly
+# Aware and Tuned respond.
+#
+# Measured on this machine, analyze_buffered() takes 116 ms, so:
+#     1.00 s hop -> 12% of one core, 1 reading per second
+#     0.50 s hop -> 23% of one core, 2 readings per second
+#     0.25 s hop -> 46% of one core, 4 readings per second
+# 0.5 s is the point where it starts to feel live without the analyzer becoming
+# a meaningful share of the machine. This is a deliberate divergence from the
+# browser reference, which uses 1 s; see NUDGE_MIN_PERSIST for what it costs.
+HOP_SECONDS = 0.5
+# Smoothing of successive analyze() reads; the docs recommend 0.3. The EMA time
+# constant is roughly hop / alpha, so halving the hop also halves the smoothing
+# lag: about 1.7 s here against 3.3 s at a 1 s hop.
 SCORE_EMA_ALPHA = 0.3
+# Scored windows a cause must dominate before the Reactive layer will fire.
+# This exists to keep the nudge gate at the same wall-clock sensitivity as the
+# slower hop: 2 windows at 0.5 s is the same one second of sustained evidence
+# that 1 window at 1 s used to be. Without it, doubling the hop rate would
+# silently make the agent twice as quick to interrupt people.
+NUDGE_MIN_PERSIST = 2
 
 
 @dataclass(frozen=True)
@@ -137,6 +152,14 @@ COMPOSITE_TH = (0.30, 0.50)
 COMPOSITE_NUDGE = 0.50  # boundary of the "bad" band, used for wording
 COMPOSITE_CLEAR = 0.30  # below this the episode is considered over (hysteresis)
 
+# Older than this and a reading describes a room that may no longer exist, so it
+# is withheld entirely. Tyto resets on every agent turn and needs a fresh 5 s
+# window, so short turns can leave the newest reading minutes behind the room.
+# The age is never surfaced to the user: it decides whether the agent may speak
+# about the room at all, and nothing else. Keep this tight, because a reading
+# that survives the gate is stated flatly as current, with no hedge attached.
+READING_MAX_AGE_SECONDS = 20.0
+
 # Risk Score at/above which a nudge may fire (when a cause also dominates).
 # Decoupled from the bands so it can be tuned without shifting them.
 NUDGE_THRESHOLD_DEFAULT = 0.40
@@ -144,22 +167,51 @@ NUDGE_THRESHOLD_MIN = COMPOSITE_CLEAR
 NUDGE_THRESHOLD_MAX = COMPOSITE_NUDGE
 
 # Turn-detection profiles handed to the voice provider (Layer 2).
-# Eager: snappy semantic VAD. Patient: longer end-of-speech in a noisy room so
-# the agent stops triggering on background sound.
+# Eager: snappy turns. Patient: harder to trigger and slower to end the turn, so
+# a noisy room stops ending the user's sentences for them.
+#
+# These are the one place this file is NOT identical to the browser reference.
+# The browser drives OpenAI Realtime, whose turn detection lives on the server
+# and is configured with semantic_vad / server_vad dicts. This branch does its
+# own turn-taking with the ai-coustics VAD, so the profiles are that model's
+# parameters instead. The layer, the two profile names, and when they swap are
+# unchanged, which is what keeps the demos comparable.
+#
+# Keys map to aic_sdk.VadParameter members:
+#   sensitivity             speech-probability threshold, 0..1. Higher = more
+#                           confidence needed, so background sound stops counting
+#                           as speech.
+#   minimum_speech_duration seconds of speech before a turn starts. Guards the
+#                           silence -> speech edge against clicks and coughs.
+#   speech_hold_duration    seconds of speech reported after the audio goes
+#                           quiet, as a rolling majority over the last
+#                           (hold * 2) seconds. Kept short here: it smooths the
+#                           signal, it does not decide the end of the turn.
+#
+# ``end_silence`` is ours, not the SDK's, and it is what actually ends a turn.
+#
+# It has to exist. Measured against real speech, is_speech_detected() drops out
+# for 45 to 285 ms at ordinary pauses inside a single sentence, and raising
+# speech_hold_duration does not close those gaps (it is a rolling majority, so a
+# longer window can make them longer). Ending the turn on the falling edge split
+# one 4.8 s question into three utterances. So we require a continuous run of
+# silence instead, comfortably longer than the worst gap observed.
+#
+# The values carry half a second of grace on top of that worst gap, so thinking
+# mid-sentence does not end your turn. It is the direct trade against how quickly
+# the agent comes back: every 0.1 s here is 0.1 s of dead air on every turn.
 VAD_PROFILES = {
     "eager": {
-        "type": "semantic_vad",
-        "eagerness": "auto",
-        "create_response": True,
-        "interrupt_response": True,
+        "sensitivity": 0.50,
+        "minimum_speech_duration": 0.06,
+        "speech_hold_duration": 0.10,
+        "end_silence": 1.10,
     },
     "patient": {
-        "type": "server_vad",
-        "threshold": 0.55,
-        "prefix_padding_ms": 400,
-        "silence_duration_ms": 900,
-        "create_response": True,
-        "interrupt_response": True,
+        "sensitivity": 0.70,
+        "minimum_speech_duration": 0.15,
+        "speech_hold_duration": 0.20,
+        "end_silence": 1.50,
     },
 }
 
@@ -255,11 +307,19 @@ def strongest_cause(scores: Scores, actionable_only: bool = False) -> dict | Non
     return best
 
 
-def room_state_summary(scores: Scores) -> str:
+def room_state_summary(scores: Scores, include_advice: bool = True) -> str:
     """The one-sentence Aware room note, or "" when the room sounds clean.
 
     Says nothing at all unless one cause clearly dominates, so the agent is not
     fed vague acoustic chatter.
+
+    ``include_advice`` appends the cause's standing instruction. Leave it on for
+    a conversational agent. Turn it off for a terse one: the advice is phrased as
+    an instruction ("confirm anything unexpected before acting on it"), and a
+    concise model tends to carry it out loud, opening replies with "just to
+    confirm, you asked..." and volunteering that it can hear background voices.
+    Without it the note is pure state, which is all the Aware layer needs to
+    shape tone.
     """
     cause = strongest_cause(scores)
     if not cause:
@@ -271,7 +331,8 @@ def room_state_summary(scores: Scores) -> str:
         severity = "marginal"
     else:
         severity = "borderline"
-    return f"Audio note: {severity} input, {cause['room']}. {cause['advice']}"
+    note = f"Audio note: {severity} input, {cause['room']}."
+    return f"{note} {cause['advice']}" if include_advice else note
 
 
 def pick_vad_profile(scores: Scores) -> str:
@@ -325,3 +386,55 @@ class EnvMonitor:
             return None
         self._streak[key] = 0  # re-arm
         return Nudge(key=key, label=LABELS[key], value=cause["value"], text=cause["text"])
+
+
+def live_reading(scores: Scores) -> str:
+    """The current Tyto reading, phrased for a model rather than a dashboard.
+
+    Handed to the agent every turn so it can answer "how do I sound?" straight
+    away instead of paying a tool round trip for it. Values are named as well as
+    numbered because the agent is told to describe them in words: the numbers are
+    there to rank the causes, not to be read out.
+
+    Loudness and reverb are included as neutral facts, never as problems, which
+    is the same rule the rest of the layer follows.
+
+    Only call this for a reading young enough to still be true, because what it
+    returns is stated as current with no hedge. Tyto needs a full 5 s window and
+    the analyzer is reset every time the agent speaks, so a run of short turns
+    can produce no new reading at all, and handing over a minutes-old one is how
+    the agent ends up insisting the room is still noisy after the noise stopped.
+    The caller does that gate; see READING_MAX_AGE_SECONDS.
+    """
+    verdict = (
+        "degraded" if scores.risk_score >= COMPOSITE_TH[1]
+        else "marginal" if scores.risk_score >= COMPOSITE_TH[0]
+        else "clean"
+    )
+    parts = []
+    for key in ("noise", "interfering_speech", "packet_loss", "codec_degradation"):
+        value = getattr(scores, key)
+        band = "high" if value > THRESHOLDS[key][1] else "some" if value > THRESHOLDS[key][0] else "none"
+        parts.append(f"{LABELS[key].lower()} {band} ({value:.2f})")
+    parts.append(f"speaker level {scores.speaker_loudness:.2f}")
+    parts.append(f"room reverb {scores.speaker_reverb:.2f}")
+    return (
+        f"Microphone reading, private: overall {verdict} ({scores.risk_score:.2f}); "
+        + ", ".join(parts)
+        + ". This is the only true description of how the user sounds. It replaces anything"
+        " said earlier in this conversation about their audio, however confident that was."
+        " Use it only if they ask, and answer in plain words."
+    )
+
+
+# What goes in the reading's place when there is no current one. It must not
+# leak the mechanics: the user should never hear about measurement, windows,
+# seconds, or how long anything took. They asked a question, and the honest
+# answer is a short "not right now".
+NO_READING = (
+    "No microphone reading is available, private. Anything said earlier in this conversation"
+    " about how the user sounds is out of date and must not be repeated. If they ask how they"
+    " sound, say in your own words, in one short sentence, that you are not sure right now, and"
+    " leave it there. Do not explain why, do not say how you would know, and do not ask them for"
+    " anything so you can check."
+)

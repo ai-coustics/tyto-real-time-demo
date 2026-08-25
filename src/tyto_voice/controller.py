@@ -19,6 +19,7 @@ scorer thread while provider events arrive on the transport thread.
 from __future__ import annotations
 
 import threading
+import time
 from typing import Callable
 
 from .decision import (
@@ -27,6 +28,7 @@ from .decision import (
     LABELS,
     MIN_EXPLANATION_VALUE,
     NO_POLARITY,
+    NUDGE_MIN_PERSIST,
     NUDGE_THRESHOLD_DEFAULT,
     NUDGE_THRESHOLD_MAX,
     NUDGE_THRESHOLD_MIN,
@@ -62,16 +64,24 @@ class TytoController:
         scorer,
         *,
         nudge_threshold: float = NUDGE_THRESHOLD_DEFAULT,
+        room_advice: bool = True,
+        pause_scoring_while_speaking: bool = True,
         on_update: Callable[[dict], None] | None = None,
         on_log: Callable[[str, str], None] | None = None,
     ):
         self.provider = provider
         self.scorer = scorer
+        # Whether the Aware note carries the cause's standing advice as well as
+        # the state. See room_state_summary: a terse agent speaks the advice.
+        self.room_advice = room_advice
+        # Whether Tyto stops measuring while the agent talks. See
+        # _sync_scoring_gate: leaving it on can starve Tyto of readings entirely.
+        self.pause_scoring_while_speaking = pause_scoring_while_speaking
         self.on_update = on_update
         self.on_log = on_log
 
         self._lock = threading.RLock()
-        self._monitor = EnvMonitor(min_persist=1, threshold=nudge_threshold)
+        self._monitor = EnvMonitor(min_persist=NUDGE_MIN_PERSIST, threshold=nudge_threshold)
 
         self.connected = False
         self.listening = True
@@ -84,6 +94,7 @@ class TytoController:
         self._last_room = ""
         self._last_vad = "eager"
         self._last_scores: Scores | None = None
+        self._last_scores_at: float | None = None
         self._last_risk: float | None = None
 
     # -- session ------------------------------------------------------------ #
@@ -105,9 +116,10 @@ class TytoController:
     def on_scores(self, scores: Scores) -> None:
         with self._lock:
             self._last_scores = scores
+            self._last_scores_at = time.monotonic()
             self._last_risk = scores.risk_score
 
-            room = room_state_summary(scores)
+            room = room_state_summary(scores, include_advice=self.room_advice)
             vad = pick_vad_profile(scores)
 
             if room != self._last_room:  # Layer 1 - Aware
@@ -230,13 +242,52 @@ class TytoController:
         self.provider.set_turn_detection(VAD_PROFILES.get(self._last_vad) if on else None)
 
     def _sync_scoring_gate(self) -> None:
-        should_score = (
-            self.connected and self.listening and not self.agent_speaking and not self.agent_audio_playing
-        )
+        """Decide whether Tyto should be measuring right now.
+
+        Pausing while the agent talks is the safe default: on speakers the mic
+        hears the agent, and Tyto would score the agent instead of the user.
+
+        It is also expensive, and the cost is easy to miss. Every pause ends in
+        ``scorer.resume()``, which resets the analyzer and demands a fresh 5 s
+        window before it will emit anything. In a conversation of ordinary short
+        turns that window never fills: with the user speaking about three
+        seconds per turn, Tyto produces **no readings at all**, so the room note
+        never updates, turn-taking never retunes, and nothing is ever nudged.
+
+        Where the microphone is captured with echo cancellation, the agent's own
+        voice is not in the signal, so there is nothing to protect against.
+        Setting ``pause_scoring_while_speaking=False`` there keeps Tyto warm and
+        reacting within a hop, which is what the web demo does.
+        """
+        if self.pause_scoring_while_speaking:
+            should_score = (
+                self.connected and self.listening
+                and not self.agent_speaking and not self.agent_audio_playing
+            )
+        else:
+            should_score = self.connected and self.listening
         if should_score and not self.scorer.scoring:
             self.scorer.resume()
         elif not should_score and self.scorer.scoring:
             self.scorer.pause()
+
+    @property
+    def scores(self) -> Scores | None:
+        """The latest smoothed reading, or None until Tyto has warmed up.
+
+        Read by a provider that wants to hand the reading to its model directly
+        rather than wait for a tool call. Pair it with :attr:`scores_age`: this
+        can be old, because Tyto is reset every time the agent speaks and needs
+        a fresh 5 s window before it will produce another one.
+        """
+        return self._last_scores
+
+    @property
+    def scores_age(self) -> float | None:
+        """Seconds since the last reading, or None if there has never been one."""
+        if self._last_scores_at is None:
+            return None
+        return time.monotonic() - self._last_scores_at
 
     # -- check_audio_quality tool ------------------------------------------- #
 

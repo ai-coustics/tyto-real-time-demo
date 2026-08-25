@@ -5,6 +5,7 @@ that the mute/nudge/resume state machine gates scoring correctly.
 """
 
 from tyto_voice.controller import TytoController
+from tyto_voice.decision import NUDGE_MIN_PERSIST
 from tyto_voice.provider import VoiceProvider
 
 
@@ -70,16 +71,28 @@ def test_aware_pushes_room_note_then_clears():
 
 
 def test_tuned_swaps_turn_detection_on_noise():
+    from tyto_voice.decision import VAD_PROFILES
+
     provider, _, controller = build()
     # Noisy room but risk below the clear band, so Tuned acts without a nudge.
     controller.on_scores(make(risk_score=0.2, noise=0.6))  # noisy -> patient
     tds = [v for k, v in provider.calls if k == "turn_detection"]
-    assert tds and tds[-1]["type"] == "server_vad"
+    assert tds and tds[-1] == VAD_PROFILES["patient"]
+
+
+def test_one_bad_window_is_not_enough_to_nudge():
+    """NUDGE_MIN_PERSIST keeps the gate at the same wall-clock sensitivity as
+    the slower hop it replaced. One window is half a second of evidence."""
+    provider, _, controller = build()
+    controller.on_scores(make(risk_score=0.7, interfering_speech=0.8))
+    assert "nudge" not in provider.kinds()
+    assert controller.awaiting_nudge is False
 
 
 def test_reactive_nudge_mutes_interrupts_and_dispatches():
     provider, scorer, controller = build()
-    controller.on_scores(make(risk_score=0.7, interfering_speech=0.8))
+    for _ in range(NUDGE_MIN_PERSIST):
+        controller.on_scores(make(risk_score=0.7, interfering_speech=0.8))
     kinds = provider.kinds()
     assert "interrupt" in kinds and "nudge" in kinds
     assert controller.awaiting_nudge is True
@@ -88,7 +101,8 @@ def test_reactive_nudge_mutes_interrupts_and_dispatches():
 
 def test_nudge_lifecycle_resumes_listening():
     provider, scorer, controller = build()
-    controller.on_scores(make(risk_score=0.7, interfering_speech=0.8))
+    for _ in range(NUDGE_MIN_PERSIST):
+        controller.on_scores(make(risk_score=0.7, interfering_speech=0.8))
     assert controller.awaiting_nudge
     # Agent starts speaking the nudge, then finishes with no audio left to play.
     controller.on_agent_speaking(True, nudge=True)

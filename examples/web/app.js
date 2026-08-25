@@ -9,8 +9,12 @@ const $ = (id) => document.getElementById(id);
 const $status = $("status"), $mic = $("mic"), $log = $("log"), $banner = $("banner");
 const $userTx = $("user-tx"), $agentTx = $("agent-tx");
 
-const SAMPLE_RATE = 24000;       // PCM16 mono, matches the backend and OpenAI
-const MIC_CHUNK = 480;           // ~20 ms batches sent to the backend
+// Capture and playback run at different rates on purpose. 16 kHz is native for
+// the ai-coustics VAD, Tyto and Inkling; Deepgram returns the agent's voice at
+// 24 kHz. One AudioContext each means nothing resamples on either side.
+const CAPTURE_RATE = 16000;
+const PLAYBACK_RATE = 24000;
+const MIC_CHUNK = 320;           // ~20 ms batches sent to the backend
 const SERIES_HISTORY_MS = 30000;
 const emaAlpha = 0.3;            // sparkline smoothing only
 
@@ -114,8 +118,8 @@ function updateLayerCards(room, vad) {
   $("layer-tuned").classList.toggle("patient", vad === "patient");
   $("layer-tuned").classList.toggle("eager", vad !== "patient");
   $("tuned-val").textContent = vad === "patient"
-    ? "Background is noisy → longer pauses, higher VAD threshold."
-    : "Quiet room → eager semantic VAD for snappy turns.";
+    ? "Background is noisy → VAD needs more confidence and holds the turn open longer."
+    : "Quiet room → sensitive VAD and a short hold, for snappy turns.";
 }
 
 // transcripts
@@ -197,6 +201,11 @@ function setNudgeThreshold(v) {
 let ws = null, connected = false;
 let micCtx = null, micStream = null, tapNode = null, micBuf = [];
 let playCtx = null, playHead = 0, activeSources = 0, agentDone = false, agentPlaying = false;
+// Scheduled but not yet finished playback nodes. Web Audio plays whatever has
+// been scheduled unless it is explicitly stopped, so an interrupt that only
+// drops the counter would leave the abandoned reply audible underneath the
+// nudge that replaced it.
+let liveSources = new Set();
 
 function send(obj) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); }
 
@@ -212,9 +221,9 @@ async function start() {
     micStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false },
     });
-    micCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+    micCtx = new AudioContext({ sampleRate: CAPTURE_RATE });
     if (micCtx.state === "suspended") await micCtx.resume();
-    playCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+    playCtx = new AudioContext({ sampleRate: PLAYBACK_RATE });
     if (playCtx.state === "suspended") await playCtx.resume();
 
     ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
@@ -268,7 +277,7 @@ function pushMic(chunk) {
 function playChunk(arrayBuffer) {
   if (!playCtx) return;
   const pcm = new Int16Array(arrayBuffer);
-  const buf = playCtx.createBuffer(1, pcm.length, SAMPLE_RATE);
+  const buf = playCtx.createBuffer(1, pcm.length, PLAYBACK_RATE);
   const data = buf.getChannelData(0);
   for (let i = 0; i < pcm.length; i++) data[i] = pcm[i] / 32768;
   const node = playCtx.createBufferSource();
@@ -278,8 +287,13 @@ function playChunk(arrayBuffer) {
   node.start(playHead);
   playHead += buf.duration;
   activeSources++;
+  liveSources.add(node);
   if (!agentPlaying) { agentPlaying = true; send({ type: "agent_playing", value: true }); }
-  node.onended = () => { activeSources--; maybeIdle(); };
+  node.onended = () => {
+    if (!liveSources.delete(node)) return;  // already dropped by a flush
+    activeSources--;
+    maybeIdle();
+  };
 }
 function maybeIdle() {
   if (activeSources <= 0 && agentDone && agentPlaying) {
@@ -289,6 +303,14 @@ function maybeIdle() {
 }
 function flushPlayback() {
   agentDone = false;
+  // Actually silence what is already scheduled. Dropping each node from the set
+  // first means its onended is a no-op, so the counter cannot go negative and
+  // strand maybeIdle.
+  for (const node of liveSources) {
+    liveSources.delete(node);
+    try { node.stop(); } catch {}
+    try { node.disconnect(); } catch {}
+  }
   if (agentPlaying) { agentPlaying = false; send({ type: "agent_playing", value: false }); }
   activeSources = 0; playHead = 0;
 }
