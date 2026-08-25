@@ -20,8 +20,10 @@ dependencies = [
 agent = ["websockets>=13"]
 # The browser demo adds the web server.
 web = ["websockets>=13", "aiohttp>=3.9"]
+# Deploying the browser demo to Modal.
+deploy = ["websockets>=13", "aiohttp>=3.9", "modal>=1.5"]
 # Everything, plus the test runner.
-dev = ["websockets>=13", "aiohttp>=3.9", "pytest>=8"]
+dev = ["websockets>=13", "aiohttp>=3.9", "pytest>=8", "modal>=1.5"]
 
 [build-system]
 requires = ["hatchling"]

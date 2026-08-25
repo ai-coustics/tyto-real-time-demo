@@ -32,6 +32,7 @@ The VAD model is tiny (xxs) and is designed to run in the audio path, so
 
 from __future__ import annotations
 
+import os
 import threading
 
 import numpy as np
@@ -39,6 +40,11 @@ import numpy as np
 from .decision import VAD_PROFILES
 
 DEFAULT_MODEL = "vad-2.1-xxs-16khz"
+
+# Where downloaded models are cached. A deployment that bakes them into its
+# image points AIC_MODELS_DIR at them so a container does not refetch on every
+# cold start.
+DEFAULT_MODELS_DIR = os.environ.get("AIC_MODELS_DIR", "./models")
 
 # Audio kept behind the write head so an utterance never starts clipped.
 PREROLL_SECONDS = 0.5
@@ -63,7 +69,7 @@ class LiveVad:
         license_key: str,
         *,
         model_id: str = DEFAULT_MODEL,
-        models_dir: str = "./models",
+        models_dir: str = DEFAULT_MODELS_DIR,
         sample_rate: int | None = None,
         profile: dict | None = None,
     ):

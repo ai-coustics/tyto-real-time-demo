@@ -239,8 +239,8 @@ async def config_handler(_request: web.Request) -> web.Response:
     return web.json_response({"captureRate": SAMPLE_RATE, "playbackRate": PLAYBACK_RATE})
 
 
-def main() -> None:
-    load_env()
+def keys_from_env() -> dict:
+    """The three keys this demo needs, or a clear error naming what is missing."""
     keys = {
         "license": os.environ.get("AIC_SDK_LICENSE", ""),
         "inkling": os.environ.get("INKLING_API_KEY", ""),
@@ -249,7 +249,12 @@ def main() -> None:
     missing = [name for name, value in keys.items() if not value]
     if missing:
         raise SystemExit(f"Missing keys: {', '.join(missing)} (see .env.example).")
+    return keys
 
+
+def build_app(keys: dict) -> web.Application:
+    """The aiohttp application. Shared by the local runner and the Modal deploy,
+    so there is one definition of the routes and one of the session wiring."""
     app = web.Application()
     app["keys"] = keys
     app.add_routes(
@@ -260,7 +265,16 @@ def main() -> None:
             web.get("/ws", ws_handler),
         ]
     )
-    host, port = "127.0.0.1", int(os.environ.get("PORT", "8080"))
+    return app
+
+
+def main() -> None:
+    load_env()
+    app = build_app(keys_from_env())
+    # Loopback by default so a laptop does not serve the microphone demo to its
+    # whole network. Deployments set HOST=0.0.0.0.
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "8080"))
     print(f"Tyto web demo on http://{host}:{port}  (Ctrl-C to stop)")
     web.run_app(app, host=host, port=port, print=None)
 

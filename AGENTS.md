@@ -305,6 +305,19 @@ uv run pytest -q                 # 68 tests: decision, controller, scorer, casca
 The unit tests need no SDK, key, network, or hardware. The end-to-end audio path
 needs an ai-coustics key, an Inkling key, a Deepgram key, a mic, and headphones.
 
+## Deploying
+
+[deploy/modal_app.py](deploy/modal_app.py) is the only deployment artifact.
+`examples/web/server.py` exposes `build_app(keys)` and `keys_from_env()` so the
+routes and the session wiring have one definition shared by the local runner and
+the deploy; keep it that way rather than restating routes in the Modal file.
+
+Three things there are load bearing: the server binds `HOST` (0.0.0.0 on Modal,
+loopback locally, so a laptop does not serve a microphone demo to its network);
+both models are baked into the image and found through `AIC_MODELS_DIR`; and the
+Modal app name is deliberately NOT `tyto-demo`, because deploying an app name
+replaces that app's whole function set.
+
 ## Conventions
 
 - Style: KISS and DRY, clean and minimal. Match the surrounding code.

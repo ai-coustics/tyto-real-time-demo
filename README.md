@@ -291,6 +291,41 @@ Talk for five seconds or more in one turn and you get a real reading.
   streams audio in and checks agent audio comes back. Only the microphone and
   speaker devices themselves are untested.
 
+## Deploy it to Modal
+
+[deploy/modal_app.py](deploy/modal_app.py) publishes the browser demo. Modal
+terminates TLS, which matters because a browser will not hand over a microphone
+on an insecure origin.
+
+```bash
+uv pip install -e ".[deploy]"
+uv run modal token new            # once, opens a browser
+
+uv run modal secret create tyto-demo-keys \
+    AIC_SDK_LICENSE=... INKLING_API_KEY=... DEEPGRAM_API_KEY=...
+
+uv run modal deploy deploy/modal_app.py
+```
+
+Notes worth reading before the first deploy:
+
+- **The app name decides what you overwrite.** Deploying to a Modal app name
+  defines that app's entire set of functions, so deploying over an existing app
+  removes whatever else lived there. The default is `tyto-demo-python` for that
+  reason. Set `MODAL_APP_NAME=tyto-demo` only if you mean to take that app over.
+- **`@modal.web_server`, not ASGI.** aiohttp is not an ASGI application, and the
+  demo holds one websocket per tab. Modal proxies the full websocket protocol to
+  a plain listening port, so the server runs as a subprocess on `0.0.0.0:8080`
+  and Modal waits for the port to open.
+- **Both models are baked into the image.** Downloading them needs network but no
+  licence, so `AIC_MODELS_DIR` points a container at models that are already on
+  disk instead of fetching about 35 MB on every cold start.
+- **Sizing.** One websocket is one Modal input, and each session runs its own
+  Tyto analyzer and VAD, which is roughly a quarter of a core once warm. The
+  function asks for 4 CPUs and allows 8 concurrent sessions, targeting 4.
+- **Keys never reach the browser**, exactly as when run locally: the page and the
+  audio come from the app, and nothing else does.
+
 ## Deploy story
 
 The web demo is the deployable one: it is a single aiohttp process serving the
