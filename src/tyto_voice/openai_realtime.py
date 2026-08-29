@@ -33,11 +33,34 @@ from typing import Callable
 import numpy as np
 
 from .controller import CHECK_AUDIO_QUALITY_TOOL
-from .decision import VAD_PROFILES
 from .provider import Handlers, VoiceProvider
 
 REALTIME_URL = "wss://api.openai.com/v1/realtime?model={model}"
 SAMPLE_RATE = 24000  # Realtime WebSocket default for PCM16
+
+# Layer 2 profiles for this backend only.
+#
+# The decision layer names the two profiles ("eager" and "patient") and decides
+# when to swap them; what a profile *is* belongs to whichever backend does the
+# turn-taking. On this branch that is Deepgram Flux, so decision.VAD_PROFILES
+# holds Flux thresholds and these Realtime dicts live here instead. Passing the
+# Flux ones to session.update would be silently wrong.
+TURN_DETECTION_PROFILES = {
+    "eager": {
+        "type": "semantic_vad",
+        "eagerness": "auto",
+        "create_response": True,
+        "interrupt_response": True,
+    },
+    "patient": {
+        "type": "server_vad",
+        "threshold": 0.55,
+        "prefix_padding_ms": 400,
+        "silence_duration_ms": 900,
+        "create_response": True,
+        "interrupt_response": True,
+    },
+}
 
 
 class OpenAIRealtimeProvider(VoiceProvider):
@@ -70,7 +93,7 @@ class OpenAIRealtimeProvider(VoiceProvider):
         self._model = model
         self._voice = voice
         self._transcribe_model = transcribe_model
-        self._turn_detection = turn_detection or VAD_PROFILES["eager"]
+        self._turn_detection = turn_detection or TURN_DETECTION_PROFILES["eager"]
         self._tools = tools if tools is not None else [CHECK_AUDIO_QUALITY_TOOL]
         self._on_log = on_log
 

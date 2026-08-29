@@ -14,7 +14,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The terminal voice agent adds the OpenAI Realtime WebSocket client.
+# The cascade opens three websockets (Flux, Aura-2) and one plain HTTP endpoint
+# (PhoneLLM on Modal, over the standard library), so this is the only addition.
 agent = ["websockets>=13"]
 # The browser demo adds the web server.
 web = ["websockets>=13", "aiohttp>=3.9"]

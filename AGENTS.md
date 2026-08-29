@@ -6,12 +6,18 @@ and is also useful as Claude Code / Cursor project context.
 
 ## What this repo is
 
-The Python reference of the Tyto acoustics-aware voice-agent demo. A live voice
+The PhoneLLM branch of the Tyto acoustics-aware voice-agent demo. A live voice
 agent talks to the user while the ai-coustics **Tyto** model scores the user's
 microphone in real time, and the agent adapts on three layers (Aware, Tuned,
 Reactive). The canonical browser reference is [index.html](index.html); this
 branch reproduces the same behavior server-side in Python. Keep the two
-comparable.
+comparable, and say so in a comment wherever they deliberately differ.
+
+The agent is a cascade: **Deepgram Flux** (transcription and turn-taking in one
+socket) -> **Pipecat PhoneLLM Alpha 1 on Modal** (`pipecat-ai/phonellm-alpha-1`,
+an OpenAI-compatible Auto Endpoint) -> **Deepgram Aura-2** (voice). The point of
+a cascade here is that every stage is cancellable, which is what the Reactive
+layer exploits.
 
 Tyto returns, per fixed 5 second window: a **risk_score** (0..1, higher is
 worse) and six dimensions (`noise`, `speaker_reverb`, `speaker_loudness`,
@@ -28,12 +34,12 @@ bands moved to <0.30 good / 0.30-0.50 warn / >0.50 bad.
 
 ```
  mic ──> LiveTytoScorer.feed() ──(aic-sdk Collector)──┐
-                                                       │ every ~2s
+                                                       │ every 0.5s
                                           Analyzer.analyze_buffered()
                                                        │  (smoothed, EMA 0.3)
                                                        v
  mic ──> provider.send_audio() ──> agent      TytoController.on_scores()
-            (OpenAI Realtime)                          │
+            (Flux -> PhoneLLM -> Aura-2)               │
                 ^   │ events                           ├─ Layer 1 Aware:    set_instructions(BASE + room note)
                 │   v                                  ├─ Layer 2 Tuned:    set_turn_detection(eager | patient)
             VoiceProvider <───── commands ────────────-┴─ Layer 3 Reactive: interrupt() + nudge()
@@ -45,14 +51,25 @@ bands moved to <0.30 good / 0.30-0.50 warn / >0.50 bad.
   mute/nudge state machine. It runs on two threads (scores arrive on the scorer
   thread, provider events on the transport thread), guarded by one re-entrant
   lock.
-- **provider.py** is the seam. **openai_realtime.py** is the only file that
-  knows about a specific backend. Audio playback is delegated to callbacks
-  (`audio_out` / `audio_done` / `audio_flush`), so the same provider drives a
-  local speaker or a browser.
+- **provider.py** is the seam. **cascade.py** is the live backend and the only
+  place the three services are wired together; **flux.py**, **phonellm.py** and
+  **deepgram.py** each know about exactly one of them. **openai_realtime.py** is
+  the second implementation of the same seam, kept for comparison. Audio playback
+  is delegated to callbacks (`audio_out` / `audio_done` / `audio_flush`), so the
+  same provider drives a local speaker or a browser.
+- **cascade.py** also owns *speculation*: Flux's `EagerEndOfTurn` fires a
+  PhoneLLM request before the user has finished, and `EndOfTurn` reuses the reply
+  only when the transcript matches exactly. Deepgram guarantees that match when
+  no `TurnResumed` intervened; without the check the agent answers half a
+  sentence.
 - **audio.py** is `SounddeviceSink`, the local-speaker player for the terminal
   agent. It also owns the "is the agent audible" signal (`on_agent_audio`).
-- **decision.py** is the pure scoring contract and decision functions, shared
-  and identical across branches.
+- **decision.py** is the pure scoring contract and decision functions. The
+  contract (`Scores`, thresholds, bands, the decision rules) is shared with every
+  branch. Two things here are branch-specific and marked as such: `VAD_PROFILES`
+  holds Flux thresholds rather than OpenAI Realtime dicts, and the reactivity
+  tuning (hop, nudge threshold, persist, cooldown) is deliberately hotter than
+  the browser's. See the table in the README.
 
 ### Frontends
 
@@ -61,9 +78,11 @@ bands moved to <0.30 good / 0.30-0.50 warn / >0.50 bad.
 - **examples/web/** - the browser UI. `server.py` (aiohttp) is the whole brain
   per tab; the browser is a thin client. `index.html` is generated from the root
   reference (CSS + markup reused, BYOK gate removed); `app.js` is the transport
-  (mic capture, agent playback, render). Audio is relayed browser <-> backend
-  <-> OpenAI; keys stay in the server env. The player (browser) owns
-  `on_agent_audio`, reported back over the socket.
+  (mic capture, agent playback, render). Mic audio is relayed browser -> backend
+  at 16 kHz and agent audio back at 24 kHz, one AudioContext per direction so
+  neither side resamples; keys stay in the server env. The player (browser) owns
+  `on_agent_audio`, reported back over the socket. This is the only frontend with
+  echo cancellation, so it is the only one with barge-in and continuous scoring.
 
 ### Who owns "agent audible" (on_agent_audio)
 
@@ -97,15 +116,24 @@ do not fake it. Implement what you can and document the gap in the README.
 These keep the demo correct and comparable across branches. Do not change them
 casually.
 
-- **Tuned constants are ground truth.** Window 5 s, hop ~2 s, EMA alpha 0.3
-  (the value the Tyto docs recommend), the per-dimension thresholds, the nudge
-  bands. They live in `decision.py` and match the browser byte for byte. If you
-  change one, change it in every branch and say why.
+- **Tuned constants are ground truth.** Window 5 s, EMA alpha 0.3 (the value the
+  Tyto docs recommend), the per-dimension thresholds, the bands. They live in
+  `decision.py`. Where this branch diverges from the browser it is written down,
+  in the constant's own comment and in the README table: hop 0.5 s not 1 s, nudge
+  threshold 0.31 not 0.40, plus a 10 s cooldown that only this branch needs. Do
+  not add an undocumented divergence.
 - **Warm-up gate.** Never score until a full fresh 5 s window has been buffered
-  since the last reset. On resume after the agent speaks, reset the analyzer and
-  re-warm. Stale audio must never skew a reading.
-- **Mute and pause while the agent speaks.** The mic is muted (no frames sent to
-  the agent) and scoring is paused while the agent talks; both resume after.
+  since the last reset. On resume after a pause, reset the analyzer and re-warm.
+  Stale audio must never skew a reading.
+- **The mic is muted while the agent speaks, unless barge-in is on.** With
+  barge-in, audio keeps flowing so Flux can report the user talking over the
+  agent; only turn that on where the microphone cannot hear the speaker.
+- **Scoring pauses while the agent speaks, unless the capture cancels echo.**
+  `pause_scoring_while_speaking=False` is what lets a nudge interrupt a reply in
+  progress, and it is only safe where the agent's voice is not in the mic signal.
+  It is on in the web demo and off in the terminal one, and both say why.
+- **A speculated reply is only ever reused on an exact transcript match.**
+  Anything else is discarded and asked again.
 - **A nudge always needs a cause the user can act on.** A high risk_score alone
   never nudges; one dimension must dominate (`strongest_cause`), and it must be
   one with nudge text. `codec_degradation` deliberately has none: it is a
@@ -145,32 +173,43 @@ for offline batch scoring, but it is intentionally not part of this demo.)
 `AnalysisResult` field names are confirmed against the installed package; only
 the licensed analysis steps need a real key.
 
-## OpenAI Realtime event mapping (WebSocket, server-side)
+## Wire mapping (verified against current docs, 2026-08)
 
-Model: `gpt-realtime-2.1` (both stacks). Input transcription stays on
-`gpt-4o-mini-transcribe`; `gpt-live-transcribe` is the newer option if you want
-it.
+**Deepgram Flux**, `wss://api.deepgram.com/v2/listen`, header
+`Authorization: Token <key>`, raw `linear16` binary in.
 
-| Concept | Outgoing / incoming |
+| Concept | Message |
 | --- | --- |
-| configure session | `session.update` (instructions, audio.input.turn_detection, transcription, audio.output.voice, tools) |
-| send mic | `input_audio_buffer.append` (base64 PCM16, 24 kHz) |
-| agent audio | `response.output_audio.delta` (also legacy `response.audio.delta`) |
-| agent text | `response.output_audio_transcript.delta` / `.done` |
-| user text | `conversation.item.input_audio_transcription.delta` / `.completed` |
-| tool call | `response.function_call_arguments.done` |
-| nudge | `response.create` with `metadata.tyto_purpose = "nudge"` |
-| interrupt | `response.cancel` (and clear the local playback buffer) |
+| connect | query: `model=flux-general-en`, `encoding`, `sample_rate`, `eot_threshold`, `eager_eot_threshold`, `eot_timeout_ms`, `keyterm` |
+| turn events | `TurnInfo` with `event` in StartOfTurn / Update / EagerEndOfTurn / TurnResumed / EndOfTurn, plus `turn_index` and `transcript` |
+| retune (Layer 2) | `{"type": "Configure", "thresholds": {...}}` -> `ConfigureSuccess` |
+| stop | `{"type": "CloseStream"}` |
+
+Ranges Flux enforces: `eot_threshold` 0.5-1.0, `eager_eot_threshold` 0.3-0.9 and
+`<= eot_threshold`, `eot_timeout_ms` 500-60000.
+
+**PhoneLLM on Modal**, `<MODAL_ENDPOINT_URL>/v1/chat/completions`, header
+`Authorization: Bearer <token-id>.<token-secret>`. Ordinary OpenAI-compatible
+chat completions. Two body fields come from the model card and are required:
+`temperature: 0` and `chat_template_kwargs: {"enable_thinking": false}`. Model id
+must be exactly `pipecat-ai/phonellm-alpha-1`. The endpoint scales to zero, so
+503 on the first request after a quiet period is normal; `/v1/models` is the
+readiness probe.
+
+**Deepgram Aura-2**, `wss://api.deepgram.com/v1/speak` (`/v2/speak` is a 400).
+`Speak` + `Flush` to say a line, `Clear` to abandon one, `Flushed` (matched by
+`sequence_id`) to know a line finished.
 
 ## Running and verifying
 
 ```bash
 uv pip install -e ".[dev]"
-uv run pytest -q                 # 34 tests: decision layer + controller + scorer
+uv run pytest -q                 # 48 tests: decision + controller + scorer + cascade
 ```
 
-The unit tests need no SDK, key, or hardware. The end-to-end audio path needs an
-ai-coustics key, an OpenAI key, a mic, and headphones.
+The unit tests need no SDK, key, network, or hardware. The end-to-end audio path
+needs an ai-coustics key, a live Modal endpoint, a Deepgram key, a mic, and
+either a browser or headphones.
 
 ## Conventions
 

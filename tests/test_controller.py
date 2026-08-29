@@ -5,6 +5,7 @@ that the mute/nudge/resume state machine gates scoring correctly.
 """
 
 from tyto_voice.controller import TytoController
+from tyto_voice.decision import VAD_PROFILES
 from tyto_voice.provider import VoiceProvider
 
 
@@ -74,7 +75,7 @@ def test_tuned_swaps_turn_detection_on_noise():
     # Noisy room but risk below the clear band, so Tuned acts without a nudge.
     controller.on_scores(make(risk_score=0.2, noise=0.6))  # noisy -> patient
     tds = [v for k, v in provider.calls if k == "turn_detection"]
-    assert tds and tds[-1]["type"] == "server_vad"
+    assert tds and tds[-1] == VAD_PROFILES["patient"]
 
 
 def test_reactive_nudge_mutes_interrupts_and_dispatches():

@@ -6,8 +6,10 @@ stay identical across every branch of the demo.
 
 from tyto_voice.decision import (
     COMPOSITE_CLEAR,
+    NUDGE_COOLDOWN_WINDOWS,
     NUDGE_THRESHOLD_DEFAULT,
     SCORE_EMA_ALPHA,
+    VAD_PROFILES,
     EnvMonitor,
     Scores,
     pick_vad_profile,
@@ -162,21 +164,53 @@ def test_nudge_fires_with_risk_and_cause():
     assert nudge is not None and nudge.key == "interfering_speech"
 
 
-def test_min_persist_one_fires_every_window():
-    # A streak of one is already a full streak, so it re-fires each window.
-    m = EnvMonitor(min_persist=1, threshold=0.40)
+def test_min_persist_one_fires_on_the_first_bad_window():
+    # A streak of one is already a full streak, so it fires immediately. This is
+    # the tuning this branch ships: the Reactive layer is meant to be quick.
+    m = EnvMonitor(min_persist=1, threshold=0.40, cooldown=0)
     bad = make(risk_score=0.7, interfering_speech=0.8)
     assert m.evaluate(bad) is not None
     assert m.evaluate(bad) is not None
 
 
 def test_persistence_and_rearm_with_min_persist_two():
-    m = EnvMonitor(min_persist=2, threshold=0.40)
+    m = EnvMonitor(min_persist=2, threshold=0.40, cooldown=0)
     bad = make(risk_score=0.7, interfering_speech=0.8)
     assert m.evaluate(bad) is None  # window 1: not yet persistent
     assert m.evaluate(bad) is not None  # window 2: fires, then re-arms
     assert m.evaluate(bad) is None  # window 3: streak rebuilding
     assert m.evaluate(bad) is not None  # window 4: fires again
+
+
+def test_cooldown_silences_the_windows_after_a_nudge():
+    # Without this, min_persist=1 plus continuous scoring is a nudge every hop.
+    m = EnvMonitor(min_persist=1, threshold=0.40, cooldown=3)
+    bad = make(risk_score=0.7, interfering_speech=0.8)
+    assert m.evaluate(bad) is not None
+    assert [m.evaluate(bad) for _ in range(3)] == [None, None, None]
+    assert m.evaluate(bad) is not None
+
+
+def test_default_cooldown_is_long_enough_to_not_machine_gun():
+    m = EnvMonitor()
+    bad = make(risk_score=0.7, interfering_speech=0.8)
+    assert m.evaluate(bad) is not None
+    assert [m.evaluate(bad) for _ in range(NUDGE_COOLDOWN_WINDOWS)] == [None] * NUDGE_COOLDOWN_WINDOWS
+    assert m.evaluate(bad) is not None  # the window after the cooldown re-arms
+
+
+def test_flux_profiles_are_within_deepgram_ranges():
+    eager, patient = VAD_PROFILES["eager"], VAD_PROFILES["patient"]
+    for profile in (eager, patient):
+        assert 0.5 <= profile["eot_threshold"] <= 1.0
+        assert 500 <= profile["eot_timeout_ms"] <= 60000
+    # Eager speculates, patient does not, and Flux rejects an eager threshold
+    # above the committed one.
+    assert 0.3 <= eager["eager_eot_threshold"] <= eager["eot_threshold"]
+    assert patient["eager_eot_threshold"] is None
+    # Patient must actually be more patient, or Layer 2 is doing nothing.
+    assert patient["eot_threshold"] > eager["eot_threshold"]
+    assert patient["eot_timeout_ms"] > eager["eot_timeout_ms"]
 
 
 def test_nudge_gated_by_threshold():

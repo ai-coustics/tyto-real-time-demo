@@ -54,13 +54,42 @@ LABELS = {
 # Tuned constants. Keep these identical across branches for comparability.
 WINDOW_SECONDS = 5.0  # Tyto's analysis window is fixed at 5 s by the model.
 # How often we slide that window and read a new score (UI + decision cadence).
-# Tyto 1.1 analyses a window in about 100 ms, roughly a quarter of what 1.0
-# needed, so a 1 s hop costs ~10% of one core and the UI moves visibly.
-HOP_SECONDS = 1.0
-# Smoothing of successive analyze() reads; the docs recommend 0.3. Note that 0.3
-# at a 1 s hop takes about as long to cross the nudge gate as the old 0.5 at a
-# 2 s hop, so the extra points do not make the agent quicker to nudge.
+# The window is fixed at 5 s by the model and cannot be shortened, but it can be
+# slid faster, and the hop is what the demo actually feels: it sets how quickly
+# the meters move and how quickly all three layers respond.
+#
+# Tyto 1.1 analyses a window in about 100 ms, so:
+#     1.00 s hop -> 10% of one core, 1 reading per second
+#     0.50 s hop -> 20% of one core, 2 readings per second
+#     0.25 s hop -> 40% of one core, 4 readings per second
+# This branch runs at 0.5 s. It is a deliberate divergence from the browser
+# reference's 1 s: the Reactive layer here interrupts the agent mid-sentence, so
+# the delay between a room going bad and the agent saying so is the whole point.
+HOP_SECONDS = 0.5
+# Smoothing of successive analyze() reads; the docs recommend 0.3. The EMA time
+# constant is roughly hop / alpha, so halving the hop also halves the smoothing
+# lag: about 1.7 s here against 3.3 s at a 1 s hop.
 SCORE_EMA_ALPHA = 0.3
+# Scored windows a cause must dominate before the Reactive layer will fire.
+#
+# One, on purpose. At a 0.5 s hop that is half a second of evidence, which is
+# the most reactive this can be made without dropping the "a cause must
+# dominate" rule itself. The EMA is what stops it being twitchy: a single bad
+# window only moves the smoothed score 30% of the way, so a genuine transient
+# still cannot cross the gate on its own.
+NUDGE_MIN_PERSIST = 1
+# Quiet period after a nudge, counted in scored windows so this file stays
+# timer-free and testable.
+#
+# It has to exist here, and it did not before. The browser reference gets a
+# cooldown for free: it stops scoring while the agent talks, so after a nudge the
+# analyzer needs a fresh 5 s window before it can say anything at all. This
+# branch keeps Tyto measuring straight through the agent's own voice (the
+# browser cancels the echo, so there is nothing to protect against), which is
+# exactly what lets a nudge interrupt a reply already in progress. Without a
+# cooldown that same change turns one bad room into a nudge every half second.
+NUDGE_COOLDOWN_SECONDS = 10.0
+NUDGE_COOLDOWN_WINDOWS = round(NUDGE_COOLDOWN_SECONDS / HOP_SECONDS)
 
 
 @dataclass(frozen=True)
@@ -139,27 +168,49 @@ COMPOSITE_CLEAR = 0.30  # below this the episode is considered over (hysteresis)
 
 # Risk Score at/above which a nudge may fire (when a cause also dominates).
 # Decoupled from the bands so it can be tuned without shifting them.
-NUDGE_THRESHOLD_DEFAULT = 0.40
+#
+# This branch sits at the bottom of the range, one point above the hysteresis
+# floor, so the agent speaks up as soon as the room leaves the "good" band
+# rather than waiting for it to get bad. The dominant-cause rule is what keeps
+# that honest: a risk score alone, however high, still never nudges.
+NUDGE_THRESHOLD_DEFAULT = 0.31
 NUDGE_THRESHOLD_MIN = COMPOSITE_CLEAR
 NUDGE_THRESHOLD_MAX = COMPOSITE_NUDGE
 
 # Turn-detection profiles handed to the voice provider (Layer 2).
-# Eager: snappy semantic VAD. Patient: longer end-of-speech in a noisy room so
-# the agent stops triggering on background sound.
+# Eager: snappy turns, and speculate on the reply before the user has finished.
+# Patient: harder to end a turn in a noisy room, so background sound stops
+# ending the user's sentences for them.
+#
+# These are the one place this file is NOT identical to the browser reference.
+# The browser drives OpenAI Realtime, whose turn detection lives on the server
+# and is configured with semantic_vad / server_vad dicts. This branch hears the
+# user through Deepgram Flux, which does turn detection itself, so the profiles
+# are its parameters instead. The layer, the two profile names, and when they
+# swap are unchanged, which is what keeps the demos comparable.
+#
+# Keys map to Flux's end-of-turn parameters (see [flux.py](flux.py)):
+#   eot_threshold        0.5..1.0, confidence needed to call the turn over.
+#                        Lower is faster and cuts people off more often.
+#   eager_eot_threshold  0.3..0.9, when to start speculating on the reply.
+#                        Must be <= eot_threshold. Omitted (None) turns
+#                        speculation off entirely.
+#   eot_timeout_ms       500..60000, hard stop on a turn that never resolves.
+#
+# Eager sits at the floor of both ranges on purpose: this demo is tuned to be
+# reactive, and a false turn end costs one abandoned speculation, which is
+# invisible. Patient gives that up because in a noisy room a speculation is
+# usually wrong and an early turn end is usually the room, not the user.
 VAD_PROFILES = {
     "eager": {
-        "type": "semantic_vad",
-        "eagerness": "auto",
-        "create_response": True,
-        "interrupt_response": True,
+        "eot_threshold": 0.5,
+        "eager_eot_threshold": 0.3,
+        "eot_timeout_ms": 1500,
     },
     "patient": {
-        "type": "server_vad",
-        "threshold": 0.55,
-        "prefix_padding_ms": 400,
-        "silence_duration_ms": 900,
-        "create_response": True,
-        "interrupt_response": True,
+        "eot_threshold": 0.85,
+        "eager_eot_threshold": None,
+        "eot_timeout_ms": 4000,
     },
 }
 
@@ -255,11 +306,19 @@ def strongest_cause(scores: Scores, actionable_only: bool = False) -> dict | Non
     return best
 
 
-def room_state_summary(scores: Scores) -> str:
+def room_state_summary(scores: Scores, include_advice: bool = True) -> str:
     """The one-sentence Aware room note, or "" when the room sounds clean.
 
     Says nothing at all unless one cause clearly dominates, so the agent is not
     fed vague acoustic chatter.
+
+    ``include_advice`` appends the cause's standing instruction. Leave it on for
+    a conversational agent. Turn it off for a terse one: the advice is phrased as
+    an instruction ("confirm anything unexpected before acting on it"), and a
+    concise model tends to carry it out loud, opening replies with "just to
+    confirm, you asked..." and volunteering that it can hear background voices.
+    Without it the note is pure state, which is all the Aware layer needs to
+    shape tone.
     """
     cause = strongest_cause(scores)
     if not cause:
@@ -271,7 +330,8 @@ def room_state_summary(scores: Scores) -> str:
         severity = "marginal"
     else:
         severity = "borderline"
-    return f"Audio note: {severity} input, {cause['room']}. {cause['advice']}"
+    note = f"Audio note: {severity} input, {cause['room']}."
+    return f"{note} {cause['advice']}" if include_advice else note
 
 
 def pick_vad_profile(scores: Scores) -> str:
@@ -297,16 +357,29 @@ class EnvMonitor:
     A red risk score alone never fires; there must always be a dominant cause,
     and it must be one the user can act on (so codec degradation, a transport
     problem, informs the agent but is never spoken as a nudge). After firing, the
-    cause's streak resets, so it takes another full run of bad windows to
-    re-fire. No timers: ``min_persist`` is counted in scored windows.
+    cause's streak resets and ``cooldown`` windows must pass before anything can
+    fire again. No timers: both counts are in scored windows.
     """
 
-    def __init__(self, min_persist: int = 1, threshold: float = NUDGE_THRESHOLD_DEFAULT):
+    def __init__(
+        self,
+        min_persist: int = NUDGE_MIN_PERSIST,
+        threshold: float = NUDGE_THRESHOLD_DEFAULT,
+        cooldown: int = NUDGE_COOLDOWN_WINDOWS,
+    ):
         self.min_persist = min_persist
         self.threshold = threshold  # live-adjustable risk gate
+        self.cooldown = cooldown
         self._streak: dict[str, int] = {}
+        self._quiet = 0  # windows still owed before another nudge may fire
 
     def evaluate(self, scores: Scores) -> Nudge | None:
+        if self._quiet > 0:
+            self._quiet -= 1
+            # Keep counting the streak down as well, so the window after a
+            # cooldown is judged on the room now and not on the room during it.
+            self._streak = {}
+            return None
         if scores.risk_score < COMPOSITE_CLEAR:
             self._streak = {}
             return None
@@ -324,4 +397,5 @@ class EnvMonitor:
         if scores.risk_score < self.threshold:
             return None
         self._streak[key] = 0  # re-arm
+        self._quiet = self.cooldown
         return Nudge(key=key, label=LABELS[key], value=cause["value"], text=cause["text"])

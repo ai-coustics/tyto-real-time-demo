@@ -1,23 +1,35 @@
 """Web demo backend: the full Tyto voice agent, served to a browser.
 
 This is the same demo as the browser reference, but the Python backend is the
-whole brain. It runs Tyto scoring and the three adaptation layers, and holds the
-agent session and your keys (from env vars). The browser is a thin client: it
-captures the mic, plays the agent, and renders the UI.
+whole brain. It runs Tyto scoring, the three adaptation layers, and the whole
+voice cascade, and it holds your keys (from env vars). The browser is a thin
+client: it captures the mic, plays the agent, and renders the UI.
 
 Per browser tab, one session:
 
-    browser mic (PCM16, 24 kHz)  ── websocket ─>  scorer.feed + provider.send_audio
-    agent audio (PCM16)          <─ websocket ──  provider audio_out
+    browser mic (PCM16, 16 kHz)  ── websocket ─>  scorer.feed + provider.send_audio
+    agent audio (PCM16, 24 kHz)  <─ websocket ──  provider audio_out
     scores / room / vad / nudge  <─ websocket ──  controller (the three layers)
 
+Capture and playback run at different rates on purpose: 16 kHz is native for
+both Tyto and Deepgram Flux, and Aura-2 returns 24 kHz. The browser keeps one
+AudioContext per direction, so neither side resamples.
+
+This is the frontend where the Reactive layer is at its most aggressive. The
+browser captures with echo cancellation, so the agent cannot hear itself, which
+lets two things be switched on that the terminal demo cannot have: barge-in, and
+Tyto measuring straight through the agent's own replies. The second is what lets
+a nudge interrupt a reply that is already being spoken.
+
 Keys live only here, never in the browser:
-    AIC_SDK_LICENSE   runs Tyto locally on this backend
-    OPENAI_API_KEY    opens the Realtime session from this backend
+    AIC_SDK_LICENSE     runs Tyto locally on this backend
+    MODAL_ENDPOINT_URL  the PhoneLLM Auto Endpoint
+    MODAL_API_KEY       its proxy token, <token-id>.<token-secret>
+    DEEPGRAM_API_KEY    Flux on the way in, Aura-2 on the way out
 
 Run:
     uv pip install -e ".[web]"
-    # put AIC_SDK_LICENSE and OPENAI_API_KEY in .env
+    # put the four values in .env
     uv run examples/web/server.py        # then open http://localhost:8080
 """
 
@@ -30,11 +42,11 @@ from pathlib import Path
 import numpy as np
 from aiohttp import WSMsgType, web
 
+from tyto_voice.cascade import SAMPLE_RATE, CascadeProvider
 from tyto_voice.controller import CHECK_AUDIO_QUALITY_TOOL, TytoController
 from tyto_voice.decision import NUDGE_THRESHOLD_DEFAULT, VAD_PROFILES
 from tyto_voice.env import load_env
-from tyto_voice.openai_realtime import SAMPLE_RATE, OpenAIRealtimeProvider
-from tyto_voice.prompts import BASE_INSTRUCTIONS
+from tyto_voice.prompts import BASE_INSTRUCTIONS, GREETING
 from tyto_voice.provider import Handlers
 from tyto_voice.scorer import LiveTytoScorer
 
@@ -57,7 +69,7 @@ class Session:
         self.keys = keys
         self.out: asyncio.Queue = asyncio.Queue()
         self.scorer: LiveTytoScorer | None = None
-        self.provider: OpenAIRealtimeProvider | None = None
+        self.provider: CascadeProvider | None = None
         self.controller: TytoController | None = None
         self._started = False
 
@@ -85,15 +97,21 @@ class Session:
         self._started = True
 
         handlers = Handlers()
-        provider = OpenAIRealtimeProvider(
+        provider = CascadeProvider(
             handlers,
-            api_key=self.keys["openai"],
+            endpoint_url=self.keys["endpoint"],
+            modal_key=self.keys["modal"],
+            deepgram_key=self.keys["deepgram"],
             instructions=BASE_INSTRUCTIONS,
+            greeting=GREETING,
             audio_out=self.send_bytes,  # agent audio -> browser plays it
             audio_done=lambda: self.send_json({"type": "agent_done"}),
             audio_flush=lambda: self.send_json({"type": "flush"}),
             turn_detection=VAD_PROFILES["eager"],
             tools=[CHECK_AUDIO_QUALITY_TOOL],
+            # The browser captures with echo cancellation on, so the agent will
+            # not hear itself and cut itself off.
+            allow_barge_in=True,
             on_log=lambda k, t: self.send_json({"type": "log", "kind": k, "text": t}),
         )
         scorer = LiveTytoScorer(
@@ -104,6 +122,12 @@ class Session:
         controller = TytoController(
             provider,
             scorer,
+            room_advice=False,  # this agent is terse; it would speak the advice
+            # On, for the same reason barge-in is: the browser cancels the echo,
+            # so the agent's voice is not in the signal and Tyto can keep
+            # measuring the room throughout. That is what lets the Reactive
+            # layer cut into a reply already in progress.
+            pause_scoring_while_speaking=False,
             on_update=self._on_update,
             on_log=lambda k, t: self.send_json({"type": "log", "kind": k, "text": t}),
         )
@@ -199,10 +223,13 @@ def main() -> None:
     load_env()
     keys = {
         "license": os.environ.get("AIC_SDK_LICENSE", ""),
-        "openai": os.environ.get("OPENAI_API_KEY", ""),
+        "endpoint": os.environ.get("MODAL_ENDPOINT_URL", ""),
+        "modal": os.environ.get("MODAL_API_KEY", ""),
+        "deepgram": os.environ.get("DEEPGRAM_API_KEY", ""),
     }
-    if not keys["license"] or not keys["openai"]:
-        raise SystemExit("Set AIC_SDK_LICENSE and OPENAI_API_KEY (see .env.example).")
+    missing = [name for name, value in keys.items() if not value]
+    if missing:
+        raise SystemExit(f"Missing: {', '.join(missing)} (see .env.example).")
 
     app = web.Application()
     app["keys"] = keys
