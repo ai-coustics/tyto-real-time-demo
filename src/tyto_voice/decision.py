@@ -91,6 +91,23 @@ NUDGE_MIN_PERSIST = 1
 NUDGE_COOLDOWN_SECONDS = 10.0
 NUDGE_COOLDOWN_WINDOWS = round(NUDGE_COOLDOWN_SECONDS / HOP_SECONDS)
 
+# Hard ceiling on how long a nudge may hold the microphone shut.
+#
+# The nudge is the only thing in this demo that closes the input gate, and it is
+# meant to close it for the couple of seconds it takes to say one line. Normally
+# it reopens when whoever is playing the audio reports it has finished. That
+# report travels from the browser, over the socket, and it only fires once the
+# generation is done AND every scheduled buffer has drained, so there are
+# several ways for it never to arrive: a dropped message, a playback node that
+# never fires onended, a flush racing the last buffer.
+#
+# When it did not arrive, the gate stayed shut for the rest of the session and
+# the agent never heard another word. That failure is silent, permanent, and
+# looks exactly like a broken microphone, which makes it far worse than the
+# thing it is guarding. So the gate is on a timer as well: whatever else
+# happens, the user gets their microphone back.
+NUDGE_MAX_SECONDS = 8.0
+
 
 @dataclass(frozen=True)
 class Scores:
@@ -201,14 +218,25 @@ NUDGE_THRESHOLD_MAX = COMPOSITE_NUDGE
 # reactive, and a false turn end costs one abandoned speculation, which is
 # invisible. Patient gives that up because in a noisy room a speculation is
 # usually wrong and an early turn end is usually the room, not the user.
+#
+# Patient's eot_threshold is 0.7, Deepgram's own default, and it must NOT be
+# pushed up towards the top of the range however patient you want to be.
+# Measured against real speech on this stack, the confidence Flux reports at a
+# genuine end of turn sits around 0.5: the EndOfTurn that ended a complete
+# spoken question came in at 0.523, and the eager events before it at 0.31 and
+# 0.52. A threshold of 0.85 was therefore never reached at all, and the only
+# thing left that could end a turn was eot_timeout_ms. The agent went silent for
+# the entire time the room was noisy, which is the exact opposite of the
+# intent, and it looked like a broken microphone rather than a patient agent.
+# If you raise this, measure end_of_turn_confidence on real speech first.
 VAD_PROFILES = {
     "eager": {
         "eot_threshold": 0.5,
         "eager_eot_threshold": 0.3,
-        "eot_timeout_ms": 1500,
+        "eot_timeout_ms": 2000,
     },
     "patient": {
-        "eot_threshold": 0.85,
+        "eot_threshold": 0.7,
         "eager_eot_threshold": None,
         "eot_timeout_ms": 4000,
     },

@@ -53,6 +53,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 import urllib.parse
 from typing import Callable
 
@@ -60,13 +61,22 @@ import numpy as np
 
 LISTEN_URL = "wss://api.deepgram.com/v2/listen"
 MODEL = "flux-general-en"
-# Flux takes raw linear16. 16 kHz is also Tyto's and the VAD model's native
-# rate, so the whole capture chain is 16 kHz and nothing resamples.
+# Flux takes raw linear16. 16 kHz is also Tyto's native rate, so the whole
+# capture chain is 16 kHz and nothing resamples.
+#
+# The audio sent here is the raw microphone signal, and it is the same signal
+# Tyto scores. Nothing enhances it on the way past, deliberately: cleaning the
+# audio first would leave Tyto measuring the enhancer's output rather than the
+# room the user is actually in, and the room is the entire subject of the demo.
 SAMPLE_RATE = 16000
 
 # Words this demo hears constantly that a general model mishears. Without the
 # keyterm, "Tyto" comes back as "Taito".
 KEYTERMS = ("Tyto", "ai-coustics")
+
+# Reconnect budget for the listen socket. See FluxSTT._run for why this exists.
+RECONNECT_ATTEMPTS = 5
+RECONNECT_BACKOFF_SECONDS = 1.0
 
 
 class FluxSTT:
@@ -139,13 +149,32 @@ class FluxSTT:
         self.closed.set()
 
     def _run(self) -> None:
-        try:
-            asyncio.run(self._main())
-        except Exception as err:  # noqa: BLE001 - surfaced to the UI
-            self._log("error", f"flux: {err}")
-        finally:
-            self.closed.set()
-            self.ready.set()  # never leave a waiter blocked on a dead socket
+        """Hold the socket open, reconnecting if it drops.
+
+        This retries rather than giving up, because losing this socket is the
+        one failure in the demo with no symptom. Audio keeps being handed to
+        :meth:`send_audio`, which quietly drops it while ``_ws`` is None, so the
+        agent simply never hears anything again: no error in the room, nothing
+        on screen but a line in the log, and the greeting has already played so
+        it looks like a working demo that has stopped listening. A single
+        "timed out during opening handshake" on connect used to end the session
+        that way.
+        """
+        for attempt in range(RECONNECT_ATTEMPTS):
+            if self.closed.is_set():
+                break
+            try:
+                asyncio.run(self._main())
+            except Exception as err:  # noqa: BLE001 - surfaced to the UI
+                self._log("error", f"flux: {err}")
+            self._ws = None
+            if self.closed.is_set():
+                break
+            if attempt < RECONNECT_ATTEMPTS - 1:
+                self._log("stt.reconnect", f"attempt {attempt + 2}")
+                time.sleep(RECONNECT_BACKOFF_SECONDS * (attempt + 1))
+        self.closed.set()
+        self.ready.set()  # never leave a waiter blocked on a dead socket
 
     async def _main(self) -> None:
         from websockets.asyncio.client import connect
@@ -234,6 +263,13 @@ class FluxSTT:
                 self._void.discard(index)  # the voided turn is now over
         if voided:
             return
+
+        # Everything except the interim Update stream, which is once a word and
+        # would drown the panel. Without this the only visible symptom of Flux
+        # hearing nothing is the absence of a reply, which is indistinguishable
+        # from every other failure in the stack.
+        if event != "Update":
+            self._log("stt.turn", f"{event} turn={index} conf={message.get('end_of_turn_confidence')}")
 
         if event == "StartOfTurn" and self._on_start_of_turn:
             self._on_start_of_turn(index, transcript)

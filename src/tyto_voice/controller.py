@@ -27,6 +27,7 @@ from .decision import (
     LABELS,
     MIN_EXPLANATION_VALUE,
     NO_POLARITY,
+    NUDGE_MAX_SECONDS,
     NUDGE_MIN_PERSIST,
     NUDGE_THRESHOLD_DEFAULT,
     NUDGE_THRESHOLD_MAX,
@@ -90,6 +91,8 @@ class TytoController:
         self.awaiting_nudge = False
         self.nudge_active = False
         self.nudge_playback_pending = False
+        # Fires if the nudge gate is never reopened by a playback report.
+        self._nudge_timer: threading.Timer | None = None
 
         self._last_room = ""
         self._last_vad = "eager"
@@ -207,12 +210,34 @@ class TytoController:
         self._sync_scoring_gate()
         self._interrupt_agent_speech(clear_input=True)
         self.awaiting_nudge = True
+        self._arm_nudge_watchdog()
         self.provider.nudge(directive.text)
         self._log("tyto.nudge.dispatch", directive.text)
         if self.on_update:
             self.on_update({"nudge": {"label": directive.label, "value": directive.value, "text": directive.text}})
 
+    def _arm_nudge_watchdog(self) -> None:
+        """Guarantee the microphone comes back. See NUDGE_MAX_SECONDS."""
+        self._cancel_nudge_watchdog()
+        timer = threading.Timer(NUDGE_MAX_SECONDS, self._nudge_watchdog_fired)
+        timer.daemon = True
+        self._nudge_timer = timer
+        timer.start()
+
+    def _cancel_nudge_watchdog(self) -> None:
+        if self._nudge_timer is not None:
+            self._nudge_timer.cancel()
+            self._nudge_timer = None
+
+    def _nudge_watchdog_fired(self) -> None:
+        with self._lock:
+            if not (self.awaiting_nudge or self.nudge_active or self.nudge_playback_pending):
+                return  # the normal path already resumed; nothing to rescue
+            self._log("tyto.nudge.timeout", "no playback report, reopening input")
+            self._resume_after_nudge()
+
     def _resume_after_nudge(self) -> None:
+        self._cancel_nudge_watchdog()
         self.nudge_active = False
         self.awaiting_nudge = False
         self.nudge_playback_pending = False

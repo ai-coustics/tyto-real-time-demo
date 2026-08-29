@@ -49,6 +49,7 @@ from tyto_voice.env import load_env
 from tyto_voice.prompts import BASE_INSTRUCTIONS, GREETING
 from tyto_voice.provider import Handlers
 from tyto_voice.scorer import LiveTytoScorer
+from tyto_voice.voicefocus import VoiceFocus
 
 HERE = Path(__file__).parent
 INDEX = HERE / "index.html"
@@ -69,6 +70,7 @@ class Session:
         self.keys = keys
         self.out: asyncio.Queue = asyncio.Queue()
         self.scorer: LiveTytoScorer | None = None
+        self.voice_focus: VoiceFocus | None = None
         self.provider: CascadeProvider | None = None
         self.controller: TytoController | None = None
         self._started = False
@@ -119,6 +121,11 @@ class Session:
             sample_rate=SAMPLE_RATE,
             on_state=lambda state, text: self.send_json({"type": "tyto_state", "state": state, "text": text}),
         )
+        voice_focus = VoiceFocus(
+            self.keys["license"],
+            sample_rate=SAMPLE_RATE,
+            on_log=lambda k, t: self.send_json({"type": "log", "kind": k, "text": t}),
+        )
         controller = TytoController(
             provider,
             scorer,
@@ -142,8 +149,11 @@ class Session:
         handlers.on_tool_call = controller.on_tool_call
 
         self.provider, self.scorer, self.controller = provider, scorer, controller
+        self.voice_focus = voice_focus
         try:
             scorer.start()  # downloads the model (cached) and checks the license
+            voice_focus.start()  # optional; a failure here only disables the switch
+            self.send_json({"type": "voice_focus", "available": voice_focus.available, "on": False})
             provider.connect()
             controller.set_connected(True)
             self.send_json({"type": "status", "state": "live", "label": "Live"})
@@ -156,6 +166,8 @@ class Session:
             self.controller.set_connected(False)
         if self.scorer:
             self.scorer.stop()
+        if self.voice_focus:
+            self.voice_focus.stop()
         if self.provider:
             self.provider.disconnect()
 
@@ -165,8 +177,42 @@ class Session:
         if not self.scorer or not self.provider:
             return
         mono = np.frombuffer(pcm16, dtype="<i2").astype(np.float32) / 32768.0
+        # Tyto always gets the raw microphone. Voice Focus, when the visitor
+        # switches it on, cleans only what the agent hears. Reversing this would
+        # have Tyto scoring the enhancer instead of the room, which is the one
+        # wiring mistake that would quietly invalidate the whole demo.
         self.scorer.feed(mono)
-        self.provider.send_audio(mono)
+        to_agent = self.voice_focus.process(mono) if self.voice_focus else mono
+        if len(to_agent):
+            self.provider.send_audio(to_agent)
+        self._mic_telemetry(mono)
+
+    def _mic_telemetry(self, mono: np.ndarray) -> None:
+        """Report, once a second, that audio is arriving and where it is going.
+
+        Worth its keep. Every way this demo fails quietly looks identical from
+        the browser: the greeting plays and then nothing ever happens again. The
+        microphone may not be captured, the audio may be silence, the provider
+        may be dropping it behind a gate, or the listen socket may be down. This
+        line says which, and it lands in the same log panel as everything else.
+        """
+        self._mic_level = max(getattr(self, "_mic_level", 0.0), float(np.abs(mono).max()))
+        self._mic_samples = getattr(self, "_mic_samples", 0) + len(mono)
+        if self._mic_samples < SAMPLE_RATE:
+            return
+        provider, level = self.provider, self._mic_level
+        self._mic_samples, self._mic_level = 0, 0.0
+        self.send_json({
+            "type": "log",
+            "kind": "mic.rx",
+            "text": (
+                f"peak={level:.3f} listening={provider._listening} "
+                f"mic_enabled={provider._mic_enabled} agent_busy={provider._busy} "
+                f"stt_socket={'up' if provider.stt._ws is not None else 'DOWN'} "
+                f"vf={'on' if (self.voice_focus and self.voice_focus.enabled) else 'off'} "
+                f"turn={provider.stt.turn_index}"
+            ),
+        })
 
     def on_message(self, data: dict) -> None:
         t = data.get("type")
@@ -176,6 +222,9 @@ class Session:
             self.stop()
         elif t == "agent_playing" and self.controller:
             self.controller.on_agent_audio(bool(data.get("value")))
+        elif t == "voice_focus" and self.voice_focus:
+            on = self.voice_focus.set_enabled(bool(data.get("value")))
+            self.send_json({"type": "voice_focus", "available": self.voice_focus.available, "on": on})
         elif t == "nudge_threshold" and self.controller:
             self.controller.nudge_threshold = float(data.get("value", NUDGE_THRESHOLD_DEFAULT))
 

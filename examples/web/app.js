@@ -87,7 +87,7 @@ function buildCards() {
     const c = document.createElement("div"); c.className = "card"; c.title = DESCRIPTIONS[k] || "";
     c.innerHTML = `<div class="c-label">${icon(k)}<span>${LABELS[k]}</span></div>` +
       `<div class="c-bar"><div class="c-fill" id="fill-${k}"></div></div>` +
-      `<div class="c-val" id="val-${k}">–</div>` +
+      `<div class="c-val" id="val-${k}">-</div>` +
       `<div class="spark-wrap"><canvas class="spark" id="spark-${k}"></canvas></div>` +
       `<div class="c-desc">${DESCRIPTIONS[k] || ""}</div>`;
     grid.appendChild(c);
@@ -110,16 +110,19 @@ function renderMetrics(m) {
     val.textContent = v.toFixed(2);
   }
 }
-function updateLayerCards(room, vad) {
-  const aware = $("aware-val"), awarePill = $("aware-pill");
-  if (room) { aware.textContent = room; awarePill.textContent = "injected"; }
-  else { aware.textContent = "Room sounds clean, agent has no extra context."; awarePill.textContent = "clean"; }
-  $("tuned-pill").textContent = vad || "eager";
-  $("layer-tuned").classList.toggle("patient", vad === "patient");
-  $("layer-tuned").classList.toggle("eager", vad !== "patient");
-  $("tuned-val").textContent = vad === "patient"
-    ? "Background is noisy → Flux needs more confidence to end a turn, and stops guessing early."
-    : "Quiet room → Flux ends turns fast and speculates on the reply before you finish.";
+function setVoiceFocus(available, on) {
+  const box = $("vf-toggle"), note = $("vf-note");
+  if (!box) return;
+  box.disabled = !available;
+  box.checked = !!on;
+  box.parentElement.classList.toggle("unavailable", !available);
+  // Kept to one short line each: the row has a fixed height and the note does
+  // not wrap, so a long string would only be clipped.
+  note.textContent = !available
+    ? "enhancement model did not load"
+    : on
+      ? "Quail VF is cleaning the agent's input"
+      : "the agent hears your raw microphone";
 }
 
 // transcripts
@@ -217,6 +220,10 @@ registerProcessor("tap",Tap);`;
 
 async function start() {
   setStatus("connecting", "Connecting…"); buildCards();
+$("vf-toggle").addEventListener("change", (e) => {
+  // Optimistic off; the server answers with the state it actually reached.
+  send({ type: "voice_focus", value: e.target.checked });
+});
   try {
     micStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false },
@@ -329,14 +336,18 @@ function onMessage(ev) {
     case "scores":
       renderMetrics(m.scores); renderComposite(m.scores.risk_score);
       metricSeries.push(Date.now(), m.scores, emaAlpha);
-      updateLayerCards(m.room, m.vad); break;
+      break;
+    // Interim text is a snapshot of the whole utterance so far, not a delta, so
+    // it replaces rather than appends. Flux re-sends the full transcript on
+    // every Update; concatenating them builds a repeating blob that scrolls the
+    // real line out of view. (The OpenAI Realtime backend streams deltas and
+    // did want +=; if you wire that one back up, it needs its own branch.)
     case "transcript":
-      if (m.who === "user") { if (m.final) { if (m.text) userFinals.push(m.text); userInterim = ""; } else userInterim += m.text; }
-      else { if (m.final) { if (m.text) agentFinals.push(m.text); agentInterim = ""; } else agentInterim += m.text; }
+      if (m.who === "user") { if (m.final) { if (m.text) userFinals.push(m.text); userInterim = ""; } else userInterim = m.text; }
+      else { if (m.final) { if (m.text) agentFinals.push(m.text); agentInterim = ""; } else agentInterim = m.text; }
       renderTx(); break;
+    case "voice_focus": setVoiceFocus(m.available, m.on); break;
     case "nudge":
-      $("react-pill").textContent = `${m.label} ${m.value.toFixed(2)}`;
-      $("react-val").textContent = `Just nudged: "${m.text}"`;
       $banner.textContent = `Tyto: ${m.label} = ${m.value.toFixed(2)}, nudging the agent`;
       $banner.classList.add("visible"); setTimeout(() => $banner.classList.remove("visible"), 6000);
       log("tyto.nudge", m.text); break;
@@ -349,5 +360,9 @@ function onMessage(ev) {
 $("nudge-th").addEventListener("input", (e) => setNudgeThreshold(+e.target.value));
 $mic.addEventListener("click", () => (connected ? stop() : start()));
 buildCards();
+$("vf-toggle").addEventListener("change", (e) => {
+  // Optimistic off; the server answers with the state it actually reached.
+  send({ type: "voice_focus", value: e.target.checked });
+});
 setNudgeThreshold(NUDGE_TH.default);
 startSeriesLoop();

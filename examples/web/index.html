@@ -4,7 +4,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Tyto — Audio Insights</title>
+  <title>Tyto Audio Insights</title>
+  <link rel="icon" type="image/png" media="(prefers-color-scheme: dark)"
+        href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAHlBMVEVMaXH////////////////////////////////////Z6AnKAAAACXRSTlMAAxux7FrVmX0FRZq3AAAACXBIWXMAAA7EAAAOxAGVKw4bAAAA7klEQVR42u2W2w7DIAhARUDl/394trPb7LoqkOzJk/ShTThcNNYQFovF/4ENR7Qze30il8zm9LGgVNCYHgqJmAU1fRKxCyAwiUNQ40Ucgj7eUsG7f5MAQhaP4Ggg5WQV7AWkGCDZWoj0DDtaQVsHFJtJL2gjJDRtZTg6d6yCVgDxBKkEW8vUI2rBgBzgVlC8Ah4JeCD4GtqJuqMG4L0AdaeHtoPLndORIPhKGBdwPwU0nIFdA3GmgN9LSVPx/X9In78ZLuaA0/H7OcKnIhJDAN1RxPgaBaEy/OM+USkc2we94vpFeakC7+VosVhM8QAZYRZoqv1m6wAAAABJRU5ErkJggg==" />
+  <link rel="icon" type="image/png" media="(prefers-color-scheme: light)"
+        href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAHlBMVEVMaXEDAgMUExQVExUVFBUVFBUVFBUREBEWFBYXFheE60K5AAAACXRSTlMAAzWMY73fFaA4/m4/AAAACXBIWXMAAA7EAAAOxAGVKw4bAAAA7ElEQVR42u2WUQ7DIAhAAUHl/heeW2OztllRSPflS/pXXgURC7BYLP4PIoaigx9vD6UqDC5RC6KUtZFcAoRSdcMlQOCsAQFCUg0IDvEOQVu/RgQIpCEBgIQEPQFh8a7gEyitE7JH0CvwDqs+wZZBpl7L6RR6CfNoEfFAz9y/C0UnBXSCZwWiBg8L+mbfwIaALQEZAjLic5k7exeqUUMzBzL76NJ6B2R2gM0v4L4KIwcBb5IQHJwhPwxSIGQYjT/chN/54/gkaC/yqZRCs7MQue6J5EQwfyG1niLmlJgJATx3MsZ/b/bRulgsnucFUncXASIl174AAAAASUVORK5CYII=" />
+  <link rel="apple-touch-icon"
+        href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAHlBMVEVMaXH////////////////////////////////////Z6AnKAAAACXRSTlMAAxux7FrVmX0FRZq3AAAACXBIWXMAAA7EAAAOxAGVKw4bAAAA7klEQVR42u2W2w7DIAhARUDl/394trPb7LoqkOzJk/ShTThcNNYQFovF/4ENR7Qze30il8zm9LGgVNCYHgqJmAU1fRKxCyAwiUNQ40Ucgj7eUsG7f5MAQhaP4Ggg5WQV7AWkGCDZWoj0DDtaQVsHFJtJL2gjJDRtZTg6d6yCVgDxBKkEW8vUI2rBgBzgVlC8Ah4JeCD4GtqJuqMG4L0AdaeHtoPLndORIPhKGBdwPwU0nIFdA3GmgN9LSVPx/X9In78ZLuaA0/H7OcKnIhJDAN1RxPgaBaEy/OM+USkc2we94vpFeakC7+VosVhM8QAZYRZoqv1m6wAAAABJRU5ErkJggg==" />
   <style>
     :root {
       --color-bg: #0F0F0F;
@@ -452,12 +458,79 @@
       animation: pulse 1.4s ease-in-out 2
     }
 
-    .layers {
-      display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 10px;
-      width: 100%;
-      margin-bottom: 14px
+    /* Fixed height, and the note never wraps. The note text differs between
+       states, and letting it reflow moved everything below it on every click. */
+    .vf-row {
+      height: 34px;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+    }
+    .vf {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+      cursor: pointer;
+      user-select: none;
+    }
+    /* The native checkbox stays as the control (keyboard, focus, :checked) and
+       the pill is drawn from it, so there is no state to keep in sync. */
+    .vf input {
+      appearance: none;
+      -webkit-appearance: none;
+      position: relative;
+      flex: none;
+      width: 46px;
+      height: 26px;
+      margin: 0;
+      border-radius: 13px;
+      background: var(--color-border);
+      border: 1px solid var(--color-border);
+      cursor: pointer;
+      transition: background 140ms ease, border-color 140ms ease;
+    }
+    .vf input::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #F9F9F9;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+      transition: transform 140ms ease;
+    }
+    .vf input:checked {
+      background: var(--color-accent);
+      border-color: var(--color-accent);
+    }
+    .vf input:checked::after {
+      transform: translateX(20px);
+    }
+    .vf input:focus-visible {
+      outline: 2px solid var(--color-glow);
+      outline-offset: 2px;
+    }
+    .vf-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--color-text-pri);
+    }
+    .vf-note {
+      font-size: 12px;
+      color: var(--color-text-ter);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .vf.unavailable {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .vf.unavailable input {
+      cursor: not-allowed;
     }
 
     .layer {
@@ -807,7 +880,7 @@
     }
 
     .tx:empty::before {
-      content: "–";
+      content: "-";
       color: var(--color-text-ter)
     }
 
@@ -894,8 +967,7 @@
         padding: 24px 14px
       }
 
-      .grid,
-      .layers {
+      .grid {
         grid-template-columns: repeat(2, 1fr)
       }
 
@@ -910,7 +982,7 @@
   <div class="glow"></div>
   <header class="topbar">
     <a class="brand" href="https://ai-coustics.com" target="_blank" rel="noopener">
-      <span class="mark"></span>Tyto<span class="ver">1.1</span><span class="sub">— Audio Insights</span>
+      <span class="mark"></span>Tyto<span class="ver">1.1</span><span class="sub">Audio Insights</span>
     </a>
     <nav>
       <a href="https://docs.ai-coustics.com" target="_blank" rel="noopener">Docs</a>
@@ -935,25 +1007,18 @@
 
     <div id="banner" class="banner"></div>
 
-    <div class="layers">
-      <div id="layer-aware" class="layer">
-        <div class="l-head"><span class="l-name">1 · Aware</span><span class="l-pill" id="aware-pill">idle</span></div>
-        <div class="l-val" id="aware-val">Agent instructions are refreshed with a live room note.</div>
-      </div>
-      <div id="layer-tuned" class="layer eager">
-        <div class="l-head"><span class="l-name">2 · Tuned</span><span class="l-pill" id="tuned-pill">eager</span></div>
-        <div class="l-val" id="tuned-val">Turn-detection profile based on background activity.</div>
-      </div>
-      <div id="layer-react" class="layer">
-        <div class="l-head"><span class="l-name">3 · Reactive</span><span class="l-pill" id="react-pill">–</span></div>
-        <div class="l-val" id="react-val">Interrupts the agent when one issue dominates.</div>
-      </div>
+    <div class="vf-row">
+      <label class="vf">
+        <input type="checkbox" id="vf-toggle" />
+        <span class="vf-label">Voice Focus</span>
+        <span class="vf-note" id="vf-note">the agent hears your raw microphone</span>
+      </label>
     </div>
 
     <div class="composite">
       <div class="composite-head">
         <span class="composite-label"><span class="composite-formula" id="tyto-state">higher = worse</span></span>
-        <span class="composite-val" id="composite-val">–</span>
+        <span class="composite-val" id="composite-val">-</span>
       </div>
       <div class="composite-bar">
         <div class="composite-fill" id="composite-fill"></div>

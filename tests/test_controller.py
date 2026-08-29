@@ -4,6 +4,8 @@ These check the provider-agnostic glue: that scores drive the three layers and
 that the mute/nudge/resume state machine gates scoring correctly.
 """
 
+import time
+
 from tyto_voice.controller import TytoController
 from tyto_voice.decision import VAD_PROFILES
 from tyto_voice.provider import VoiceProvider
@@ -115,3 +117,30 @@ def test_audio_quality_snapshot_summarizes_top_issue():
     snap = controller.audio_quality_snapshot()
     assert snap["verdict"] == "degraded"
     assert snap["top_issue"]["key"] == "interfering_speech"
+
+
+def test_nudge_watchdog_reopens_input_when_playback_never_reports():
+    """The gate must reopen even if the browser never says playback finished.
+
+    This is the failure that made the demo go permanently deaf: one nudge fired,
+    the resume depended on a message that never arrived, and every later turn
+    was dropped behind a closed gate.
+    """
+    from tyto_voice import controller as controller_mod
+
+    provider, _, controller = build()
+    controller_mod.NUDGE_MAX_SECONDS = 0.05  # keep the test quick
+    controller.on_scores(make(risk_score=0.7, interfering_speech=0.8))
+    controller.on_agent_speaking(True, nudge=True)
+    controller.on_agent_audio(True)          # the nudge audio starts playing
+    controller.on_agent_speaking(False, nudge=True)  # generation done, still playing
+    assert controller.listening is False     # gate shut, waiting on playback
+    assert controller.nudge_playback_pending is True
+
+    time.sleep(0.2)                          # ...and the report never comes
+
+    assert controller.listening is True
+    assert controller.nudge_playback_pending is False
+    # and turn detection is re-armed, with whatever profile the room now wants
+    tds = [v for k, v in provider.calls if k == "turn_detection"]
+    assert tds[-1] == VAD_PROFILES["patient"]
