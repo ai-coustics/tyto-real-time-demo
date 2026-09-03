@@ -15,7 +15,7 @@ noise the moment there is any.
 Keep this short. It is the system message of the LLMContext the whole
 conversation is built on, so every extra line is prefill on every reply, and a
 voice agent cannot afford it. The Aware layer swaps this string with an
-LLMMessagesUpdateFrame; see [cascade.py](cascade.py).
+LLMMessagesTransformFrame; see [cascade.py](cascade.py).
 
 Notes on the rules, so nobody "cleans them up" and regresses the demo:
 

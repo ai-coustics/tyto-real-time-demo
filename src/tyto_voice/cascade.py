@@ -57,6 +57,19 @@ import asyncio
 from typing import Callable
 
 import numpy as np
+from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    Frame,
+    InputAudioRawFrame,
+    InterimTranscriptionFrame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
+    LLMTextFrame,
+    TranscriptionFrame,
+)
+from pipecat.observers.base_observer import BaseObserver, FramePushed
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from .decision import VAD_PROFILES
 from .provider import Handlers, VoiceProvider
@@ -136,7 +149,6 @@ class CascadeProvider(VoiceProvider):
         # report it to the controller as agent speech anyway.
         self._pending_nudge = False
         self._nudge_in_flight = False
-        self._cancelled = False
 
     # -- lifecycle (called on the server event loop) ------------------------ #
 
@@ -334,11 +346,15 @@ class CascadeProvider(VoiceProvider):
         self._call_soon(lambda: self._tap.set_enabled(on))
 
     def interrupt(self, clear_input: bool = False) -> None:
-        """Stop whatever the agent is saying, right now."""
+        """Stop whatever the agent is saying, right now.
+
+        ``clear_input`` is part of the seam and is a no-op here: the controller
+        has already shut the mic gate before it calls this, so there is no
+        half-spoken user turn left inside Flux to discard.
+        """
         from pipecat.frames.frames import InterruptionFrame
 
         self._pending_nudge = False
-        self._cancelled = True
         self._queue(InterruptionFrame())
 
     def nudge(self, text: str) -> None:
@@ -351,7 +367,6 @@ class CascadeProvider(VoiceProvider):
         from pipecat.frames.frames import TTSSpeakFrame
 
         self._pending_nudge = True
-        self._cancelled = False
         self._queue(TTSSpeakFrame(text=text, append_to_context=True))
 
     def request_response(self) -> None:
@@ -369,10 +384,6 @@ class CascadeProvider(VoiceProvider):
         if self._voice_focus is None:
             return False
         return self._voice_focus.set_enabled(on)
-
-    def send_tool_result(self, call_id: str, output: dict) -> None:
-        # Unused: the tool is answered by the registered function handler above.
-        pass
 
     # -- outbound to the browser UI ----------------------------------------- #
 
@@ -429,219 +440,158 @@ def _flux_settings(profile: dict) -> dict:
     return out
 
 
-class TytoAudioTap:
+def _to_float32(pcm: bytes) -> np.ndarray:
+    """Transport PCM16 to the mono float32 both Tyto and Quail expect."""
+    return np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+
+
+def _to_pcm16(mono: np.ndarray) -> bytes:
+    """Back the other way, for a frame continuing down the pipeline."""
+    return (np.clip(mono, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+
+
+class TytoAudioTap(FrameProcessor):
     """Feeds the user's microphone into Tyto, and gates it.
 
     Sits one hop after the transport input, so it sees every
     ``InputAudioRawFrame`` before the transcriber does. It normally passes every
     frame through untouched. When the gate is shut it drops the audio instead,
     which is how the Reactive layer stops the agent hearing itself say a nudge.
-
-    Wrapped like this so the module imports without pipecat installed; the real
-    base class is mixed in lazily on first construction.
     """
 
-    def __new__(cls, scorer):
-        return _audio_tap_class()(scorer)
+    def __init__(self, scorer):
+        super().__init__()
+        self._scorer = scorer
+        self._enabled = True
+
+    def set_enabled(self, on: bool) -> None:
+        self._enabled = on
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InputAudioRawFrame):
+            if not self._enabled:
+                return  # gate shut: neither Tyto nor Flux sees this audio
+            self._scorer.feed(_to_float32(frame.audio))
+        await self.push_frame(frame, direction)
 
 
-_AUDIO_TAP_CLASS = None
-
-
-def _audio_tap_class():
-    global _AUDIO_TAP_CLASS
-    if _AUDIO_TAP_CLASS is not None:
-        return _AUDIO_TAP_CLASS
-
-    from pipecat.frames.frames import Frame, InputAudioRawFrame
-    from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-
-    class _TytoAudioTap(FrameProcessor):
-        def __init__(self, scorer):
-            super().__init__()
-            self._scorer = scorer
-            self._enabled = True
-
-        def set_enabled(self, on: bool) -> None:
-            self._enabled = on
-
-        async def process_frame(self, frame: Frame, direction: FrameDirection):
-            await super().process_frame(frame, direction)
-            if isinstance(frame, InputAudioRawFrame):
-                if not self._enabled:
-                    return  # gate shut: neither Tyto nor Flux sees this audio
-                mono = np.frombuffer(frame.audio, dtype="<i2").astype(np.float32) / 32768.0
-                self._scorer.feed(mono)
-            await self.push_frame(frame, direction)
-
-    _AUDIO_TAP_CLASS = _TytoAudioTap
-    return _AUDIO_TAP_CLASS
-
-
-class VoiceFocusProcessor:
+class VoiceFocusProcessor(FrameProcessor):
     """Optionally cleans the audio continuing to the agent. Never Tyto's copy.
 
     A pass-through when the switch is off or the model did not load, which is
     why it is always in the pipeline rather than being wired in conditionally:
     one shape to read, on camera and in a stack trace.
 
-    Enhancement is block-aligned, so a frame in is not a frame out. The
-    enhancer carries a residual and returns only the audio that is ready, so a
-    frame is rewritten to whatever came back, and dropped when nothing did. The
-    samples are not lost, they arrive on a later frame.
+    Enhancement is block-aligned, so a frame in is not a frame out. The enhancer
+    carries a residual and returns only the audio that is ready, so a frame is
+    rewritten to whatever came back, and dropped when nothing did. The samples
+    are not lost, they arrive on a later frame.
     """
 
-    def __new__(cls, voice_focus):
-        return _voice_focus_class()(voice_focus)
+    def __init__(self, voice_focus):
+        super().__init__()
+        self._vf = voice_focus
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if self._vf is not None and self._vf.enabled and isinstance(frame, InputAudioRawFrame):
+            out = self._vf.process(_to_float32(frame.audio))
+            if len(out) == 0:
+                return  # nothing ready yet; it will arrive on a later frame
+            frame.audio = _to_pcm16(out)
+            # num_frames is derived from len(audio) and is not settable via the
+            # constructor, so it has to be corrected by hand.
+            frame.num_frames = len(out)
+        await self.push_frame(frame, direction)
 
 
-_VOICE_FOCUS_CLASS = None
+# The only frames the observer acts on. Everything else, and in particular the
+# flood of InputAudioRawFrames, is rejected before it can touch the dedupe set.
+# See the note in on_push_frame.
+HANDLED_FRAMES = (
+    LLMFullResponseStartFrame,
+    LLMFullResponseEndFrame,
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    LLMTextFrame,
+    TranscriptionFrame,
+    InterimTranscriptionFrame,
+)
 
 
-def _voice_focus_class():
-    global _VOICE_FOCUS_CLASS
-    if _VOICE_FOCUS_CLASS is not None:
-        return _VOICE_FOCUS_CLASS
+class TytoFrameObserver(BaseObserver):
+    """Turns pipeline frames into ``Handlers`` calls for the controller.
 
-    from pipecat.frames.frames import Frame, InputAudioRawFrame
-    from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+    Every frame push is observed, so react exactly once per frame.
+    """
 
-    class _VoiceFocusProcessor(FrameProcessor):
-        def __init__(self, voice_focus):
-            super().__init__()
-            self._vf = voice_focus
+    def __init__(self, provider: CascadeProvider):
+        super().__init__()
+        self._p = provider
+        self._seen: set[int] = set()
+        self._agent_text = ""
 
-        async def process_frame(self, frame: Frame, direction: FrameDirection):
-            await super().process_frame(frame, direction)
-            if self._vf is not None and self._vf.enabled and isinstance(frame, InputAudioRawFrame):
-                mono = np.frombuffer(frame.audio, dtype="<i2").astype(np.float32) / 32768.0
-                out = self._vf.process(mono)
-                if len(out) == 0:
-                    return  # nothing ready yet; it will arrive on a later frame
-                pcm = np.clip(out, -1.0, 1.0) * 32767.0
-                frame.audio = pcm.astype("<i2").tobytes()
-                # num_frames is derived from len(audio) and is not settable via
-                # the constructor, so it has to be corrected by hand.
-                frame.num_frames = len(out)
-            await self.push_frame(frame, direction)
+    async def on_push_frame(self, data: FramePushed):
+        frame = data.frame
 
-    _VOICE_FOCUS_CLASS = _VoiceFocusProcessor
-    return _VOICE_FOCUS_CLASS
-
-
-class TytoFrameObserver:
-    """Turns pipeline frames into ``Handlers`` calls for the controller."""
-
-    def __new__(cls, provider: CascadeProvider):
-        return _observer_class()(provider)
-
-
-_OBSERVER_CLASS = None
-
-
-def _observer_class():
-    global _OBSERVER_CLASS
-    if _OBSERVER_CLASS is not None:
-        return _OBSERVER_CLASS
-
-    from pipecat.frames.frames import (
-        BotStartedSpeakingFrame,
-        BotStoppedSpeakingFrame,
-        InterimTranscriptionFrame,
-        LLMFullResponseEndFrame,
-        LLMFullResponseStartFrame,
-        LLMTextFrame,
-        TranscriptionFrame,
-    )
-    from pipecat.observers.base_observer import BaseObserver, FramePushed
-
-    # The only frames this observer acts on. Everything else, and in particular
-    # the flood of InputAudioRawFrames, is rejected before it can touch the
-    # dedupe set. See the note in on_push_frame.
-    HANDLED = (
-        LLMFullResponseStartFrame,
-        LLMFullResponseEndFrame,
-        BotStartedSpeakingFrame,
-        BotStoppedSpeakingFrame,
-        LLMTextFrame,
-        TranscriptionFrame,
-        InterimTranscriptionFrame,
-    )
-
-    class _TytoFrameObserver(BaseObserver):
-        """Every frame push is observed, so react exactly once per frame."""
-
-        def __init__(self, provider: CascadeProvider):
-            super().__init__()
-            self._p = provider
-            self._seen: set[int] = set()
-            self._agent_text = ""
-
-        async def on_push_frame(self, data: FramePushed):
-            frame = data.frame
-
-            # Filter BEFORE deduping. One frame is pushed once per processor it
-            # crosses, so dedupe is needed, but it must key on ``frame.id``,
-            # which is monotonic, and never on ``id(frame)``, which is a memory
-            # address CPython recycles the moment a frame is freed. Audio frames
-            # arrive about every 10 ms and are freed immediately, so an
-            # address-keyed set fills with exactly the addresses the next
-            # transcript will be allocated at, and transcripts silently vanish.
-            if not isinstance(frame, HANDLED):
-                return
-            if frame.id in self._seen:
-                return
+        # Filter BEFORE deduping. One frame is pushed once per processor it
+        # crosses, so dedupe is needed, but it must key on ``frame.id``, which is
+        # monotonic, and never on ``id(frame)``, which is a memory address
+        # CPython recycles the moment a frame is freed. Audio frames arrive about
+        # every 10 ms and are freed immediately, so an address-keyed set fills
+        # with exactly the addresses the next transcript will be allocated at,
+        # and transcripts silently vanish.
+        if not isinstance(frame, HANDLED_FRAMES):
+            return
+        if frame.id in self._seen:
+            return
+        self._seen.add(frame.id)
+        if len(self._seen) > 4096:
+            # Safe to forget: ids only increase, so a cleared id cannot come back
+            # around and be mistaken for a new frame.
+            self._seen.clear()
             self._seen.add(frame.id)
-            if len(self._seen) > 4096:
-                # Safe to forget: ids only increase, so a cleared id cannot come
-                # back around and be mistaken for a new frame.
-                self._seen.clear()
-                self._seen.add(frame.id)
 
-            p, h = self._p, self._p.h
+        p, h = self._p, self._p.h
 
-            # A normal reply: the LLM response frames bracket the agent's turn.
-            if isinstance(frame, LLMFullResponseStartFrame):
-                self._agent_text = ""
+        # A normal reply: the LLM response frames bracket the agent's turn.
+        if isinstance(frame, LLMFullResponseStartFrame):
+            self._agent_text = ""
+            if h.on_agent_speaking:
+                h.on_agent_speaking(True)
+        elif isinstance(frame, LLMFullResponseEndFrame):
+            if self._agent_text and h.on_agent_transcript:
+                h.on_agent_transcript(self._agent_text, True)
+            self._agent_text = ""
+            if h.on_agent_speaking:
+                h.on_agent_speaking(False)
+
+        # Agent audio. A nudge is a TTSSpeakFrame and produces no LLM response
+        # frames, so it is reported as agent speech from here.
+        elif isinstance(frame, BotStartedSpeakingFrame):
+            if p._pending_nudge:
+                p._pending_nudge = False
+                p._nudge_in_flight = True
                 if h.on_agent_speaking:
-                    h.on_agent_speaking(True)
-            elif isinstance(frame, LLMFullResponseEndFrame):
-                cancelled = p._cancelled
-                p._cancelled = False
-                if self._agent_text and h.on_agent_transcript:
-                    h.on_agent_transcript(self._agent_text, True)
-                self._agent_text = ""
+                    h.on_agent_speaking(True, nudge=True)
+            if h.on_agent_audio:
+                h.on_agent_audio(True)
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            if p._nudge_in_flight:
+                p._nudge_in_flight = False
                 if h.on_agent_speaking:
-                    h.on_agent_speaking(False, cancelled=cancelled)
+                    h.on_agent_speaking(False, nudge=True)
+            if h.on_agent_audio:
+                h.on_agent_audio(False)
 
-            # Agent audio. A nudge is a TTSSpeakFrame and produces no LLM
-            # response frames, so it is reported as agent speech from here.
-            elif isinstance(frame, BotStartedSpeakingFrame):
-                if p._pending_nudge:
-                    p._pending_nudge = False
-                    p._nudge_in_flight = True
-                    if h.on_agent_speaking:
-                        h.on_agent_speaking(True, nudge=True)
-                if h.on_agent_audio:
-                    h.on_agent_audio(True)
-            elif isinstance(frame, BotStoppedSpeakingFrame):
-                if p._nudge_in_flight:
-                    p._nudge_in_flight = False
-                    if h.on_agent_speaking:
-                        h.on_agent_speaking(False, nudge=True)
-                if h.on_agent_audio:
-                    h.on_agent_audio(False)
-
-            elif isinstance(frame, LLMTextFrame):
-                self._agent_text += frame.text
-                if h.on_agent_transcript:
-                    h.on_agent_transcript(self._agent_text, False)
-            elif isinstance(frame, TranscriptionFrame):
-                if h.on_user_transcript:
-                    h.on_user_transcript(frame.text, True)
-            elif isinstance(frame, InterimTranscriptionFrame):
-                if h.on_user_transcript:
-                    h.on_user_transcript(frame.text, False)
-
-    _OBSERVER_CLASS = _TytoFrameObserver
-    return _OBSERVER_CLASS
+        elif isinstance(frame, LLMTextFrame):
+            self._agent_text += frame.text
+            if h.on_agent_transcript:
+                h.on_agent_transcript(self._agent_text, False)
+        elif isinstance(frame, TranscriptionFrame):
+            if h.on_user_transcript:
+                h.on_user_transcript(frame.text, True)
+        elif isinstance(frame, InterimTranscriptionFrame):
+            if h.on_user_transcript:
+                h.on_user_transcript(frame.text, False)

@@ -14,7 +14,6 @@ Commands (app -> provider):
     interrupt(clear_input=False)     cancel in-flight agent output
     nudge(text)                      Layer 3 - one spoken line
     request_response()               let the agent speak first (opening greeting)
-    send_tool_result(call_id, out)   answer a tool call, then let the agent reply
 
 Events (provider -> app) are delivered through a Handlers object, all optional:
     on_ready()
@@ -22,7 +21,6 @@ Events (provider -> app) are delivered through a Handlers object, all optional:
     on_agent_audio(playing)
     on_user_transcript(text, final)
     on_agent_transcript(text, final)
-    on_tool_call(name, call_id)
 """
 
 from __future__ import annotations
@@ -39,7 +37,6 @@ class Handlers:
     on_agent_audio: Callable[[bool], None] | None = None
     on_user_transcript: Callable[[str, bool], None] | None = None
     on_agent_transcript: Callable[[str, bool], None] | None = None
-    on_tool_call: Callable[[str, str], None] | None = None
 
 
 class VoiceProvider(ABC):
@@ -69,6 +66,3 @@ class VoiceProvider(ABC):
 
     @abstractmethod
     def request_response(self) -> None: ...
-
-    @abstractmethod
-    def send_tool_result(self, call_id: str, output: dict) -> None: ...

@@ -24,8 +24,9 @@ their room as it is; the switch is what shows the difference, and a difference
 needs a before.
 
 The model is ``quail-vf-2.2-l-16khz``, native at the 16 kHz the rest of the
-capture chain runs at. Measured on this machine it costs about 9% of one core
-and adds 30 ms of delay, so it is affordable to leave switched on.
+capture chain runs at. Measured here at about 6% of one core for realtime audio,
+adding 30 ms of delay, so it is affordable to leave switched on. This is the one
+place that number is stated; the README quotes it.
 """
 
 from __future__ import annotations
@@ -139,6 +140,9 @@ class VoiceFocus:
                 except Exception as err:  # noqa: BLE001
                     self._log("error", f"voice focus: {err}")
                     self._enabled = False
+                    # set_enabled's clear is bypassed on this path, so drop the
+                    # residual here or a re-enable prepends stale audio.
+                    self._residual = np.empty(0, dtype=np.float32)
                     return mono
             self._residual = data[offset:].copy()
         return np.concatenate(out) if out else np.empty(0, dtype=np.float32)

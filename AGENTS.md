@@ -197,7 +197,7 @@ confirmed to work; only the licensed analysis steps need a real key.
 | Concept | Frame or call |
 | --- | --- |
 | set instructions (Aware) | `LLMMessagesTransformFrame(transform, run_llm=False)` |
-| retune turn-taking (Tuned) | `STTUpdateSettingsFrame(settings={eot_threshold, ...})` |
+| retune turn-taking (Tuned) | `STTUpdateSettingsFrame(delta=DeepgramFluxSTTService.Settings(...))` |
 | nudge (Reactive) | `TTSSpeakFrame(text, append_to_context=True)` |
 | interrupt | `InterruptionFrame()` |
 | opening greeting | `TTSSpeakFrame` (no LLM round trip) |
@@ -234,7 +234,7 @@ Notes that cost real debugging time:
 
 ```bash
 uv pip install -e ".[dev]"
-uv run pytest -q                 # 55 tests: decision, controller, scorer, cascade, voice focus
+uv run pytest -q                 # decision, controller, scorer, cascade, voice focus, server startup
 ```
 
 Most tests need no SDK, key, or hardware. `tests/test_cascade.py` needs pipecat

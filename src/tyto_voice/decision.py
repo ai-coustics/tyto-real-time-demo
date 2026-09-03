@@ -8,8 +8,10 @@ test, and reuse.
 It does two things:
 
 1. Defines the *scoring contract*: the ``Scores`` value object and the tuned
-   constants (5 s window, 0.5 s hop, EMA alpha 0.3). These match the browser
-   reference (``index.html``) byte for byte so behavior is comparable.
+   constants (5 s window, 0.5 s hop, EMA alpha 0.3). The browser copy of these
+   lives in ``examples/pipecat/app.js`` and must be kept in step by hand. The
+   ``index.html`` at the repo root is an older Tyto 1.0 reference, deliberately
+   frozen, and does NOT match these numbers.
 
 2. Defines the *decision layer*: given a smoothed ``Scores`` reading it answers
    three questions, one per adaptation layer:

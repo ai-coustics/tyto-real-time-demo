@@ -22,7 +22,13 @@ from pipecat.frames.frames import (  # noqa: E402
     TTSSpeakFrame,
 )
 
-from tyto_voice.cascade import CascadeProvider, _flux_settings  # noqa: E402
+from tyto_voice.cascade import (  # noqa: E402
+    CascadeProvider,
+    TytoAudioTap,
+    TytoFrameObserver,
+    VoiceFocusProcessor,
+    _flux_settings,
+)
 from tyto_voice.decision import VAD_PROFILES  # noqa: E402
 from tyto_voice.provider import Handlers  # noqa: E402
 
@@ -180,18 +186,42 @@ def test_greeting_is_spoken_without_a_model_round_trip():
 
 
 def test_mic_gate_stops_tyto_and_flux_together():
-    """One gate, so the agent can never be triggered by its own nudge."""
-    from tyto_voice.cascade import _audio_tap_class
+    """One gate, so the agent can never be triggered by its own nudge.
+
+    Behavioural on purpose. Asserting that set_enabled flips a boolean proves
+    nothing: deleting the drop in TytoAudioTap.process_frame leaves that green
+    while the agent starts answering its own nudge.
+    """
+    import asyncio
 
     fed = []
     scorer = type("S", (), {"feed": lambda self, m: fed.append(len(m))})()
-    tap = _audio_tap_class()(scorer)
+    tap = TytoAudioTap(scorer)
 
-    assert tap._enabled is True
+    out = asyncio.run(_run(tap, _audio_frame([0.1, 0.2])))
+    assert fed == [2], "Tyto should be fed while the gate is open"
+    assert len(out) == 1, "Flux should see the audio while the gate is open"
+
     tap.set_enabled(False)
-    assert tap._enabled is False
+    out = asyncio.run(_run(tap, _audio_frame([0.3, 0.4])))
+    assert fed == [2], "gate shut: Tyto must not be fed"
+    assert out == [], "gate shut: Flux must not see the audio either"
+
     tap.set_enabled(True)
-    assert tap._enabled is True
+    asyncio.run(_run(tap, _audio_frame([0.5, 0.6])))
+    assert fed == [2, 2], "the gate must reopen"
+
+
+def test_set_mic_enabled_reaches_the_tap():
+    """The controller's only route to the gate. Untested until now."""
+    p = make_provider()
+    p._tap = TytoAudioTap(FakeScorer())
+    p._call_soon = lambda fn: fn()  # run the loop hop inline
+
+    p.set_mic_enabled(False)
+    assert p._tap._enabled is False
+    p.set_mic_enabled(True)
+    assert p._tap._enabled is True
 
 
 # -- Voice Focus ------------------------------------------------------------ #
@@ -241,11 +271,8 @@ async def _noop():
 def test_voice_focus_is_a_passthrough_when_off():
     import asyncio
 
-    from tyto_voice.cascade import _voice_focus_class
-
     vf = FakeVoiceFocus(enabled=False)
-    proc = _voice_focus_class()(vf)
-    proc._FrameProcessor__started = True  # bypass the base class start gate
+    proc = VoiceFocusProcessor(vf)
 
     frame = _audio_frame([0.1, 0.2, 0.3, 0.4])
     original = frame.audio
@@ -258,11 +285,8 @@ def test_voice_focus_is_a_passthrough_when_off():
 def test_voice_focus_rewrites_the_audio_when_on():
     import asyncio
 
-    from tyto_voice.cascade import _voice_focus_class
-
     vf = FakeVoiceFocus(enabled=True)
-    proc = _voice_focus_class()(vf)
-    proc._FrameProcessor__started = True
+    proc = VoiceFocusProcessor(vf)
 
     frame = _audio_frame([0.1, 0.2, 0.3, 0.4])
     original = frame.audio
@@ -279,12 +303,9 @@ def test_voice_focus_drops_a_frame_when_nothing_is_ready_yet():
 
     import numpy as np
 
-    from tyto_voice.cascade import _voice_focus_class
-
     vf = FakeVoiceFocus(enabled=True)
     vf.process = lambda mono: np.empty(0, dtype=np.float32)
-    proc = _voice_focus_class()(vf)
-    proc._FrameProcessor__started = True
+    proc = VoiceFocusProcessor(vf)
 
     out = asyncio.run(_run(proc, _audio_frame([0.1, 0.2])))
     assert out == [], "an empty result must not be pushed as a silent frame"
@@ -319,13 +340,13 @@ def test_tyto_is_upstream_of_voice_focus_in_the_real_pipeline():
         # processors we built are one level down.
         for stage in p._worker.pipeline._processors:
             inner = getattr(stage, "_processors", None)
-            if inner and any(type(x).__name__ == "_TytoAudioTap" for x in inner):
+            if inner and any(type(x).__name__ == "TytoAudioTap" for x in inner):
                 return [type(x).__name__ for x in inner]
         raise AssertionError("could not find the built pipeline")
 
     names = asyncio.run(build())
-    tap = names.index("_TytoAudioTap")
-    vf = names.index("_VoiceFocusProcessor")
+    tap = names.index("TytoAudioTap")
+    vf = names.index("VoiceFocusProcessor")
     stt = names.index("DeepgramFluxSTTService")
 
     assert tap < vf, "Tyto must score the microphone, never the enhanced signal"
@@ -337,8 +358,6 @@ def test_tyto_is_upstream_of_voice_focus_in_the_real_pipeline():
 
 def _observer_with_capture():
     """A real observer whose Handlers calls are recorded."""
-    from tyto_voice.cascade import _observer_class
-
     got = {"user": [], "agent": [], "speaking": [], "audio": []}
     h = Handlers(
         on_user_transcript=lambda t, f: got["user"].append((t, f)),
@@ -348,7 +367,7 @@ def _observer_with_capture():
     )
     p = make_provider()
     p.h = h
-    return _observer_class()(p), got
+    return TytoFrameObserver(p), got
 
 
 class _Pushed:
@@ -361,29 +380,21 @@ def test_dedupe_keys_on_frame_id_not_on_the_memory_address():
 
     CPython hands the address of a freed object straight back to the next
     allocation, so a set keyed on id(frame) reports a brand new transcript as
-    "already seen" and silently drops it. Frame.id is a monotonic counter and is
-    the only safe key. Constructed deliberately here, because in a live pipeline
-    it depends on allocation timing and would make a flaky test.
+    "already seen" and silently drops it. frame.id is a monotonic counter and is
+    the only safe key. Asserted on the set itself rather than by racing the
+    allocator, so this cannot skip.
     """
     import asyncio
 
     from pipecat.frames.frames import TranscriptionFrame
 
     obs, got = _observer_with_capture()
+    frame = TranscriptionFrame("hello there", "user", "t", None)
+    asyncio.run(obs.on_push_frame(_Pushed(frame)))
 
-    first = TranscriptionFrame("first utterance", "user", "t", None)
-    addr = id(first)
-    asyncio.run(obs.on_push_frame(_Pushed(first)))
-    del first
-
-    second = TranscriptionFrame("second utterance", "user", "t", None)
-    if id(second) != addr:
-        pytest.skip("allocator did not reuse the address on this run")
-
-    asyncio.run(obs.on_push_frame(_Pushed(second)))
-    assert [t for t, _ in got["user"]] == ["first utterance", "second utterance"], (
-        "a frame was dropped because it landed on a recycled address"
-    )
+    assert got["user"] == [("hello there", True)]
+    assert obs._seen == {frame.id}, "dedupe must key on the monotonic frame.id"
+    assert frame.id != id(frame), "frame.id is not the memory address"
 
 
 def test_audio_frames_never_enter_the_dedupe_set():

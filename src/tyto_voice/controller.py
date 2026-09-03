@@ -43,20 +43,6 @@ from .decision import (
 from .prompts import BASE_INSTRUCTIONS
 from .provider import VoiceProvider
 
-# The tool the agent calls when the user asks "how do I sound?".
-CHECK_AUDIO_QUALITY_TOOL = {
-    "type": "function",
-    "name": "check_audio_quality",
-    "description": (
-        "Get the current real-time audio quality of the user's mic input. Returns a "
-        "summary, verdict, the Tyto Score, and the top current issue. Call this whenever "
-        "the user asks if you can hear them, how their audio sounds, or about their "
-        "connection/environment."
-    ),
-    "parameters": {"type": "object", "properties": {}, "required": []},
-}
-
-
 class TytoController:
     def __init__(
         self,
@@ -102,8 +88,24 @@ class TytoController:
     # -- session ------------------------------------------------------------ #
 
     def set_connected(self, value: bool) -> None:
-        self.connected = value
-        self._sync_scoring_gate()
+        with self._lock:
+            self.connected = value
+            self._sync_scoring_gate()
+
+    def close(self) -> None:
+        """Release the watchdog. Nothing may fire after the session is gone.
+
+        The nudge watchdog is a threading.Timer, so without this a visitor who
+        reloads mid-nudge leaves an armed timer that wakes up to NUDGE_MAX_SECONDS
+        later and drives a torn-down provider: queueing frames on a cancelled
+        worker, or touching a closed event loop, from a thread with no handler.
+        """
+        with self._lock:
+            self._cancel_nudge_watchdog()
+            self.connected = False
+            self.awaiting_nudge = False
+            self.nudge_active = False
+            self.nudge_playback_pending = False
 
     @property
     def nudge_threshold(self) -> float:
@@ -176,13 +178,6 @@ class TytoController:
                 else:
                     self._maybe_unmute_mic()
             self._sync_scoring_gate()
-
-    def on_tool_call(self, name: str, call_id: str) -> None:
-        if name != "check_audio_quality":
-            return
-        result = self.audio_quality_snapshot()
-        self._log("tool.check_audio_quality", result.get("summary", ""))
-        self.provider.send_tool_result(call_id, result)
 
     def on_user_transcript(self, text: str, final: bool) -> None:
         self._push_transcript("user", text, final)

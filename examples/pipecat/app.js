@@ -1,12 +1,18 @@
-// Tyto Pipecat demo, browser client.
+// Tyto demo, browser client.
 //
-// Thin client: capture the mic and play the agent over a WebRTC peer connection
-// to the Pipecat backend, and render the UI from messages the backend sends over
-// the WebRTC data channel. All scoring, the three adaptation layers, and the keys
-// live on the backend. The metric rendering here is identical to the websocket
-// web demo (examples/web/app.js); only the transport differs: WebRTC media for
-// audio (so the browser's echo cancellation and jitter buffer do the work) and a
-// data channel for the score/layer/transcript/log messages.
+// A thin client, deliberately. It captures the mic, plays the agent, and draws
+// the UI. All scoring, the three adaptation layers and every API key live on the
+// backend, so nothing secret reaches this file.
+//
+// Two channels over one WebRTC peer connection:
+//   audio         the mic up, the agent's voice down. The browser owns echo
+//                 cancellation and the jitter buffer, which is what makes it
+//                 safe for Tyto to keep measuring while the agent talks.
+//   data channel  JSON from the backend: scores, transcripts, nudges, logs.
+//                 Two messages go the other way: nudge_threshold, voice_focus.
+//
+// The constants below (ENV_KEYS, LABELS, THRESHOLDS, COMPOSITE_TH, NUDGE_TH)
+// mirror src/tyto_voice/decision.py and must be changed in both places.
 
 const $ = (id) => document.getElementById(id);
 const $status = $("status"), $mic = $("mic"), $log = $("log"), $banner = $("banner");
@@ -50,7 +56,7 @@ const DESCRIPTIONS = {
   speaker_reverb: "Low = dry, near-field audio; high = reverberant, far-field audio. Informational only.",
 };
 
-// ── UI rendering (identical to examples/web/app.js) ───────────────────────────
+// ── UI rendering ──────────────────────────────────────────────────────────────
 function setStatus(state, label) { $status.className = "badge " + state; $status.innerHTML = `<span class="dot"></span>${label}`; }
 function setTytoState(state, text) {
   const el = $("tyto-state"); if (!el) return;
@@ -127,6 +133,9 @@ function setVoiceFocus(available, on) {
 
 // transcripts
 let userFinals = [], userInterim = "", agentFinals = [], agentInterim = "";
+// How long a "disconnected" peer is given to recover before the session ends.
+const RECONNECT_GRACE_MS = 8000;
+let dropTimer = null;
 function renderTx() {
   const draw = (el, f, i) => { el.innerHTML = ""; for (const x of f) { const d = document.createElement("div"); d.className = "line"; d.textContent = x; el.appendChild(d); } if (i) { const d = document.createElement("div"); d.className = "line interim"; d.textContent = i; el.appendChild(d); } el.scrollTop = el.scrollHeight; };
   draw($userTx, userFinals, userInterim); draw($agentTx, agentFinals, agentInterim);
@@ -242,8 +251,22 @@ async function start() {
       log("rtc.state", pc.connectionState);
       // Drive the badge from the real connection state so it never gets stuck on
       // "Connecting…"; the backend's "status"/"tyto_state" messages refine it.
-      if (pc.connectionState === "connected") setStatus("live", "Live");
-      else if (["failed", "closed", "disconnected"].includes(pc.connectionState)) stop();
+      // "disconnected" is not terminal. ICE reports it for a blip as short as a
+      // Wi-Fi roam, and it recovers on its own. Tearing the session down there
+      // stops the mic and wipes the transcript for something the browser was
+      // about to fix by itself, so give it a window and only then give up.
+      if (pc.connectionState === "connected") {
+        clearTimeout(dropTimer); dropTimer = null;
+        setStatus("live", "Live");
+      } else if (pc.connectionState === "disconnected") {
+        setStatus("connecting", "Reconnecting…");
+        clearTimeout(dropTimer);
+        dropTimer = setTimeout(() => {
+          if (pc.connectionState === "disconnected") { log("rtc.state", "gave up reconnecting"); stop(); }
+        }, RECONNECT_GRACE_MS);
+      } else if (["failed", "closed"].includes(pc.connectionState)) {
+        stop();
+      }
     };
 
     for (const track of micStream.getAudioTracks()) pc.addTrack(track, micStream);
@@ -271,6 +294,7 @@ async function start() {
 function stop() {
   if (!connected && !pc) return;
   connected = false; $mic.classList.remove("live");
+  clearTimeout(dropTimer); dropTimer = null;
   if (dc) { try { dc.close(); } catch {} dc = null; }
   if (pc) { try { pc.close(); } catch {} pc = null; }
   if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }

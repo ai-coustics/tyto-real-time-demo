@@ -107,9 +107,6 @@ def test_pipeline_starts_before_the_models_load(monkeypatch):
         def request_response(self):
             pass
 
-        def send_tool_result(self, call_id, output):
-            pass
-
         def set_voice_focus(self, on):
             return False
 

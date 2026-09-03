@@ -24,7 +24,6 @@ class FakeProvider(VoiceProvider):
     def interrupt(self, clear_input=False): self.calls.append(("interrupt", clear_input))
     def nudge(self, text): self.calls.append(("nudge", text))
     def request_response(self): self.calls.append(("request_response", None))
-    def send_tool_result(self, call_id, output): self.calls.append(("tool_result", call_id))
 
     def kinds(self):
         return [c[0] for c in self.calls]

@@ -21,7 +21,7 @@ aiortc and a websocket stack, and ``examples/score_mic.py`` and the decision
 tests must keep working on a bare install. Import it directly where it is used.
 """
 
-from .controller import CHECK_AUDIO_QUALITY_TOOL, TytoController
+from .controller import TytoController
 from .decision import (
     EnvMonitor,
     Nudge,
@@ -35,7 +35,6 @@ from .scorer import LiveTytoScorer
 from .voicefocus import VoiceFocus
 
 __all__ = [
-    "CHECK_AUDIO_QUALITY_TOOL",
     "EnvMonitor",
     "Handlers",
     "LiveTytoScorer",

@@ -162,7 +162,7 @@ On the defaults one reply spent its entire token budget reasoning and came back
   report until it has a full window of real audio, so the agent opens with a
   question to get the visitor talking.
 - **Verification.** The decision layer, controller state machine, and the frames
-  each layer emits are covered by `pytest` (50 tests). The aic-sdk path, the
+  each layer emits are covered by `pytest`. The aic-sdk path, the
   three network services, and the pipeline build are verified against the
   installed packages and live keys. The full live audio path needs your own keys,
   a mic, and a browser.

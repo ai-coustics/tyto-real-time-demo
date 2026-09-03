@@ -17,7 +17,7 @@ nothing about it.
 
 Run::
 
-    uv pip install -e ".[dev]"
+    uv pip install -e .
     # put AIC_SDK_LICENSE, DEEPGRAM_API_KEY and OPENAI_API_KEY in .env
     uv run examples/pipecat/server.py        # then open http://localhost:8080
 """
@@ -56,6 +56,7 @@ class Session:
         self.controller: TytoController | None = None
         self._last_tyto_state: dict | None = None
         self._load_task = None
+        self._stopped = False
 
     async def start(self) -> None:
         import asyncio
@@ -72,7 +73,7 @@ class Session:
         voice_focus = VoiceFocus(
             self.keys["license"],
             sample_rate=SAMPLE_RATE,
-            on_log=lambda k, t: self._send({"type": "log", "kind": k, "text": t}),
+            on_log=self._log,
         )
 
         provider = CascadeProvider(
@@ -87,7 +88,7 @@ class Session:
             turn_detection=VAD_PROFILES["eager"],
             on_client_message=self._on_client_message,
             on_connected=self._on_connected,
-            on_log=lambda k, t: self._send({"type": "log", "kind": k, "text": t}),
+            on_log=self._log,
         )
         controller = TytoController(
             provider,
@@ -101,7 +102,7 @@ class Session:
             # through a reply. That is what lets Layer 3 interrupt one.
             pause_scoring_while_speaking=False,
             on_update=self._on_update,
-            on_log=lambda k, t: self._send({"type": "log", "kind": k, "text": t}),
+            on_log=self._log,
         )
         scorer.on_scores = controller.on_scores
         provider.audio_quality_fn = controller.audio_quality_snapshot
@@ -137,23 +138,39 @@ class Session:
             # error is shown in the browser. Same for Voice Focus, whose switch
             # is simply shown disabled. State emitted here is remembered and
             # re-sent once the data channel is up.
+            #
+            # Cancelling this task does not stop an executor thread that is
+            # already inside a model load, so each step checks whether the
+            # session died while it was waiting and tidies up after itself.
+            # Otherwise a licensed SDK handle is installed after stop() ran and
+            # is never released.
             try:
                 await loop.run_in_executor(None, scorer.start)
+                if self._stopped:
+                    scorer.stop()
+                    return
             except Exception as err:  # noqa: BLE001 - surface to the browser
                 self._on_tyto_state("error", str(err))
             try:
                 await loop.run_in_executor(None, voice_focus.start)
+                if self._stopped:
+                    voice_focus.stop()
+                    return
             except Exception as err:  # noqa: BLE001 - optional feature
-                self._send({"type": "log", "kind": "error", "text": str(err)})
+                self._log("error", str(err))
             self._send_voice_focus()
 
         self._load_task = asyncio.ensure_future(_load_models())
 
     def stop(self) -> None:
+        # Order matters: mark the session dead first, so a model load still
+        # running in an executor thread cannot install a live processor behind
+        # the teardown, then release the watchdog before anything it touches.
+        self._stopped = True
         if self._load_task and not self._load_task.done():
             self._load_task.cancel()
         if self.controller:
-            self.controller.set_connected(False)
+            self.controller.close()
         if self.scorer:
             self.scorer.stop()
         if self.voice_focus:
@@ -218,6 +235,14 @@ class Session:
     def _send(self, message: dict) -> None:
         if self.provider:
             self.provider.send_ui(message)
+
+    def _log(self, kind: str, text: str) -> None:
+        self._send({"type": "log", "kind": kind, "text": text})
+        if kind == "error" and self.voice_focus is not None:
+            # A process() failure switches Voice Focus off internally, so resend
+            # the real state or the checkbox stays on and the note keeps
+            # claiming it is cleaning the input.
+            self._send_voice_focus()
 
 
 # --------------------------------------------------------------------------- #
