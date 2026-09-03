@@ -356,36 +356,52 @@ class _Pushed:
         self.frame = frame
 
 
-def test_transcripts_survive_a_flood_of_audio_frames():
-    """The regression: an address-keyed dedupe silently swallowed transcripts.
+def test_dedupe_keys_on_frame_id_not_on_the_memory_address():
+    """The regression: two different frames can share a memory address.
 
-    CPython recycles the memory address of a short-lived object, and audio
-    frames are created and freed about every 10 ms. A set keyed on id(frame)
-    therefore fills with exactly the addresses the next TranscriptionFrame will
-    be allocated at, and the transcript is dropped as "already seen". Keying on
-    the monotonic frame.id is what makes this pass.
+    CPython hands the address of a freed object straight back to the next
+    allocation, so a set keyed on id(frame) reports a brand new transcript as
+    "already seen" and silently drops it. Frame.id is a monotonic counter and is
+    the only safe key. Constructed deliberately here, because in a live pipeline
+    it depends on allocation timing and would make a flaky test.
     """
     import asyncio
 
-    from pipecat.frames.frames import InputAudioRawFrame, TranscriptionFrame
+    from pipecat.frames.frames import TranscriptionFrame
 
     obs, got = _observer_with_capture()
 
+    first = TranscriptionFrame("first utterance", "user", "t", None)
+    addr = id(first)
+    asyncio.run(obs.on_push_frame(_Pushed(first)))
+    del first
+
+    second = TranscriptionFrame("second utterance", "user", "t", None)
+    if id(second) != addr:
+        pytest.skip("allocator did not reuse the address on this run")
+
+    asyncio.run(obs.on_push_frame(_Pushed(second)))
+    assert [t for t, _ in got["user"]] == ["first utterance", "second utterance"], (
+        "a frame was dropped because it landed on a recycled address"
+    )
+
+
+def test_audio_frames_never_enter_the_dedupe_set():
+    """The churn must not be tracked: it is the source of the recycling above."""
+    import asyncio
+
+    from pipecat.frames.frames import InputAudioRawFrame
+
+    obs, _ = _observer_with_capture()
+
     async def go():
-        # Realistic churn: a few seconds of audio at 16 kHz, each frame freed
-        # immediately, exactly as the transport produces them.
-        for _ in range(2000):
+        for _ in range(500):
             f = InputAudioRawFrame(audio=b"\x00\x00" * 160, sample_rate=16000, num_channels=1)
             await obs.on_push_frame(_Pushed(f))
             del f
-        await obs.on_push_frame(
-            _Pushed(TranscriptionFrame("hello there", "user", "t", None))
-        )
 
     asyncio.run(go())
-    assert got["user"] == [("hello there", True)], (
-        "the user's transcript was swallowed by the dedupe set"
-    )
+    assert obs._seen == set(), "audio frames must be filtered out before deduping"
 
 
 def test_a_frame_pushed_by_several_processors_is_handled_once():
