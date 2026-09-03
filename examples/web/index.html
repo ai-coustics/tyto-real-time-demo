@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Tyto Audio Insights</title>
+  <title>Tyto Audio insight</title>
   <link rel="icon" type="image/png" media="(prefers-color-scheme: dark)"
         href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAHlBMVEVMaXH////////////////////////////////////Z6AnKAAAACXRSTlMAAxux7FrVmX0FRZq3AAAACXBIWXMAAA7EAAAOxAGVKw4bAAAA7klEQVR42u2W2w7DIAhARUDl/394trPb7LoqkOzJk/ShTThcNNYQFovF/4ENR7Qze30il8zm9LGgVNCYHgqJmAU1fRKxCyAwiUNQ40Ucgj7eUsG7f5MAQhaP4Ggg5WQV7AWkGCDZWoj0DDtaQVsHFJtJL2gjJDRtZTg6d6yCVgDxBKkEW8vUI2rBgBzgVlC8Ah4JeCD4GtqJuqMG4L0AdaeHtoPLndORIPhKGBdwPwU0nIFdA3GmgN9LSVPx/X9In78ZLuaA0/H7OcKnIhJDAN1RxPgaBaEy/OM+USkc2we94vpFeakC7+VosVhM8QAZYRZoqv1m6wAAAABJRU5ErkJggg==" />
   <link rel="icon" type="image/png" media="(prefers-color-scheme: light)"
@@ -172,116 +172,6 @@
       color: var(--green);
       background: transparent;
       border: 1px solid var(--color-border)
-    }
-
-    .gate {
-      position: fixed;
-      inset: 0;
-      z-index: 50;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      padding: 24px;
-      background: rgba(8, 8, 10, .72);
-      backdrop-filter: blur(6px)
-    }
-
-    .gate.visible {
-      display: flex
-    }
-
-    .gate-card {
-      width: 100%;
-      max-width: 440px;
-      background: var(--color-panel);
-      border: 1px solid var(--color-border);
-      border-radius: 14px;
-      padding: 24px
-    }
-
-    .gate-card h2 {
-      margin: 0 0 8px;
-      font-size: 18px;
-      font-weight: 600
-    }
-
-    .gate-sub {
-      margin: 0 0 18px;
-      font-size: 12px;
-      line-height: 1.5;
-      color: var(--color-text-ter)
-    }
-
-    .gate-field {
-      display: block;
-      margin-bottom: 14px
-    }
-
-    .gate-field>span {
-      display: block;
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: .7px;
-      color: var(--color-text-sec);
-      margin-bottom: 6px
-    }
-
-    .gate-field input {
-      width: 100%;
-      box-sizing: border-box;
-      background: #0a0a0d;
-      border: 1px solid var(--color-border);
-      border-radius: 8px;
-      padding: 10px 12px;
-      color: var(--color-text-pri);
-      font-family: var(--font-mono);
-      font-size: 13px
-    }
-
-    .gate-field input:focus {
-      outline: none;
-      border-color: var(--color-accent)
-    }
-
-    .gate-field a {
-      display: inline-block;
-      margin-top: 6px;
-      font-size: 10px;
-      color: var(--color-accent);
-      text-decoration: none
-    }
-
-    .gate-err {
-      min-height: 16px;
-      font-size: 11px;
-      color: var(--red);
-      margin-bottom: 8px
-    }
-
-    .gate-actions {
-      display: flex;
-      justify-content: flex-end;
-      gap: 10px
-    }
-
-    .gate-btn {
-      font-size: 12px;
-      border-radius: 8px;
-      padding: 9px 16px;
-      cursor: pointer;
-      border: 1px solid var(--color-border)
-    }
-
-    .gate-btn.ghost {
-      background: transparent;
-      color: var(--color-text-sec)
-    }
-
-    .gate-btn.primary {
-      background: var(--color-accent);
-      border-color: var(--color-accent);
-      color: var(--color-bg);
-      font-weight: 600
     }
 
     .badge {
@@ -531,50 +421,6 @@
     }
     .vf.unavailable input {
       cursor: not-allowed;
-    }
-
-    .layer {
-      background: var(--color-panel);
-      border: 1px solid var(--color-border);
-      border-radius: 10px;
-      padding: 10px 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      min-height: 62px
-    }
-
-    .layer .l-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline
-    }
-
-    .layer .l-name {
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: .7px;
-      color: var(--color-text-ter)
-    }
-
-    .layer .l-pill {
-      font-size: 10px;
-      font-family: var(--font-mono);
-      color: var(--color-text-sec)
-    }
-
-    .layer .l-val {
-      font-size: 13px;
-      color: var(--color-text-sec);
-      line-height: 1.4
-    }
-
-    .layer.eager .l-pill {
-      color: var(--green)
-    }
-
-    .layer.patient .l-pill {
-      color: var(--orange)
     }
 
     .composite {
@@ -982,7 +828,7 @@
   <div class="glow"></div>
   <header class="topbar">
     <a class="brand" href="https://ai-coustics.com" target="_blank" rel="noopener">
-      <span class="mark"></span>Tyto<span class="ver">1.1</span><span class="sub">Audio Insights</span>
+      <span class="mark"></span>Tyto<span class="ver">1.1</span><span class="sub">Audio insight</span>
     </a>
     <nav>
       <a href="https://docs.ai-coustics.com" target="_blank" rel="noopener">Docs</a>
@@ -1010,14 +856,14 @@
     <div class="vf-row">
       <label class="vf">
         <input type="checkbox" id="vf-toggle" />
-        <span class="vf-label">Voice Focus</span>
+        <span class="vf-label">Quail Voice Focus 2.2</span>
         <span class="vf-note" id="vf-note">the agent hears your raw microphone</span>
       </label>
     </div>
 
     <div class="composite">
       <div class="composite-head">
-        <span class="composite-label"><span class="composite-formula" id="tyto-state">higher = worse</span></span>
+        <span class="composite-label"><span class="composite-formula" id="tyto-state">lower is better</span></span>
         <span class="composite-val" id="composite-val">-</span>
       </div>
       <div class="composite-bar">
@@ -1026,8 +872,8 @@
       </div>
       <div class="composite-tune">
         <label for="nudge-th">Nudge sensitivity</label>
-        <input type="range" class="nudge-range" id="nudge-th" min="0.30" max="0.50" step="0.01" value="0.40" aria-label="Nudge sensitivity">
-        <span class="nudge-val" id="nudge-th-val">≥ 0.40</span>
+        <input type="range" class="nudge-range" id="nudge-th" min="0.30" max="0.50" step="0.01" value="0.31" aria-label="Nudge sensitivity">
+        <span class="nudge-val" id="nudge-th-val">≥ 0.31</span>
       </div>
     </div>
 
@@ -1047,8 +893,6 @@
 
     <div class="log" id="log"></div>
   </div>
-
-  <audio id="remote" autoplay></audio>
 
   <script type="module" src="/app.js"></script>
 </body>

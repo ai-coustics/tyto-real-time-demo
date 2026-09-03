@@ -8,7 +8,8 @@ three layers, exactly like the browser reference:
     3 Reactive - it interrupts itself to nudge you when one issue dominates
 
 The agent is a cascade: Deepgram Flux hears you and decides when your turn is
-over, Pipecat PhoneLLM on Modal answers in text, and Deepgram Aura-2 speaks it.
+over, an LLM answers in text, and Deepgram Aura-2 speaks it. LLM_BACKEND picks
+the brain: gpt-5-mini by default, or PhoneLLM on Modal.
 This wires the scorer (Tyto over aic-sdk), the controller (the provider-agnostic
 decision logic), and that cascade behind the provider seam. The microphone is
 owned here so the same frames feed both Tyto and Flux.
@@ -19,9 +20,10 @@ the way in. The agent's own voice comes back at 24 kHz.
 Run:
     uv pip install -e ".[agent]"
     export AIC_SDK_LICENSE=...        # https://developers.ai-coustics.com
-    export MODAL_ENDPOINT_URL=...     # modal endpoint create --model pipecat-ai/phonellm-alpha-1
-    export MODAL_API_KEY=...          # <token-id>.<token-secret>
     export DEEPGRAM_API_KEY=...       # https://console.deepgram.com
+    export OPENAI_API_KEY=...         # the default brain, gpt-5-mini
+    # or, for PhoneLLM on Modal instead:
+    #   export LLM_BACKEND=phonellm MODAL_ENDPOINT_URL=... MODAL_API_KEY=...
     uv run examples/voice_agent.py
 
 Use headphones. There is no echo cancellation on a raw output device, so on
@@ -38,6 +40,7 @@ from tyto_voice.cascade import PLAYBACK_RATE, SAMPLE_RATE, CascadeProvider
 from tyto_voice.controller import CHECK_AUDIO_QUALITY_TOOL, TytoController
 from tyto_voice.decision import VAD_PROFILES
 from tyto_voice.env import load_env
+from tyto_voice.llm import backend_from_env
 from tyto_voice.prompts import BASE_INSTRUCTIONS, GREETING
 from tyto_voice.provider import Handlers
 from tyto_voice.scorer import LiveTytoScorer
@@ -67,13 +70,12 @@ def main() -> None:
     load_env()
     keys = {
         "license": os.environ.get("AIC_SDK_LICENSE"),
-        "endpoint": os.environ.get("MODAL_ENDPOINT_URL"),
-        "modal": os.environ.get("MODAL_API_KEY"),
         "deepgram": os.environ.get("DEEPGRAM_API_KEY"),
     }
     missing = [name for name, value in keys.items() if not value]
     if missing:
         sys.exit(f"Missing: {', '.join(missing)}. See .env.example.")
+    backend = backend_from_env()
 
     log = make_logger()
     handlers = Handlers()  # filled in once the controller exists
@@ -85,8 +87,7 @@ def main() -> None:
     )
     provider = CascadeProvider(
         handlers,
-        endpoint_url=keys["endpoint"],
-        modal_key=keys["modal"],
+        backend=backend,
         deepgram_key=keys["deepgram"],
         instructions=BASE_INSTRUCTIONS,
         greeting=GREETING,

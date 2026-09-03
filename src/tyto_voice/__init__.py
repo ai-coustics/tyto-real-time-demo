@@ -6,15 +6,15 @@ in real time. The scoring contract and tuned constants match the browser
 reference (``index.html``) so behavior stays comparable.
 
 The agent is a cascade: Deepgram Flux hears the user and decides when the turn
-is over, Pipecat PhoneLLM on Modal answers in text, and Deepgram Aura-2 speaks
-it. ``OpenAIRealtimeProvider`` is still here as the second implementation of the
+is over, an LLM answers in text (gpt-5-mini, or Pipecat PhoneLLM on Modal), and
+Deepgram Aura-2 speaks it. ``OpenAIRealtimeProvider`` is still here as the second implementation of the
 same seam.
 
 Public surface:
     decision  - the scoring contract and decision layer (pure Python)
     scorer    - LiveTytoScorer: real-time Tyto scoring over the aic-sdk
     flux      - FluxSTT: transcription and turn-taking in one socket
-    phonellm  - PhoneLLMClient: the agent's replies, served from Modal
+    llm       - LLMClient: the agent's replies. PhoneLLM on Modal, or gpt-5-mini
     deepgram  - DeepgramTTS: the agent's voice
     provider  - VoiceProvider seam (swap the voice backend behind one interface)
     controller- TytoController: wires scores into the three adaptation layers
@@ -35,7 +35,7 @@ from .decision import (
 )
 from .deepgram import DeepgramTTS
 from .flux import FluxSTT
-from .phonellm import PhoneLLMClient
+from .llm import Backend, LLMClient, backend_from_env
 from .provider import Handlers, VoiceProvider
 from .scorer import LiveTytoScorer
 
@@ -45,14 +45,16 @@ __all__ = [
     "DeepgramTTS",
     "EnvMonitor",
     "FluxSTT",
+    "Backend",
     "Handlers",
     "LiveTytoScorer",
     "Nudge",
-    "PhoneLLMClient",
+    "LLMClient",
     "Scores",
     "SounddeviceSink",
     "TytoController",
     "VoiceProvider",
+    "backend_from_env",
     "pick_vad_profile",
     "room_state_summary",
     "strongest_cause",

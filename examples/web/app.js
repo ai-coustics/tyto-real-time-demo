@@ -15,6 +15,9 @@ const $userTx = $("user-tx"), $agentTx = $("agent-tx");
 const CAPTURE_RATE = 16000;
 const PLAYBACK_RATE = 24000;
 const MIC_CHUNK = 320;           // ~20 ms batches sent to the backend
+// Playback lead. Enough to absorb websocket jitter, short enough not to be
+// heard as latency on top of the agent's own response time.
+const PLAY_LEAD = 0.06;
 const SERIES_HISTORY_MS = 30000;
 const emaAlpha = 0.3;            // sparkline smoothing only
 
@@ -39,7 +42,9 @@ const THRESHOLDS = {
   codec_degradation: [0.30, 0.50], speaker_reverb: [0.25, 0.55], speaker_loudness: [0.12, 0.25],
 };
 const COMPOSITE_TH = [0.30, 0.50];   // Tyto Risk Score bands from the docs
-const NUDGE_TH = { min: 0.30, max: 0.50, default: 0.40 };
+// Mirrors NUDGE_THRESHOLD_DEFAULT in decision.py. The client sends its value on
+// load, so a mismatch here silently retunes the Reactive layer.
+const NUDGE_TH = { min: 0.30, max: 0.50, default: 0.31 };
 const DESCRIPTIONS = {
   noise: "Ambient noise behind the speaker, relative to the speaker's level. High = the noise is loud compared to the speaker.",
   packet_loss: "Audio dropouts or discontinuities: packet loss, jitter, frame erasure, or CPU overload.",
@@ -121,7 +126,7 @@ function setVoiceFocus(available, on) {
   note.textContent = !available
     ? "enhancement model did not load"
     : on
-      ? "Quail VF is cleaning the agent's input"
+      ? "Quail VF 2.2 is cleaning the agent's input"
       : "the agent hears your raw microphone";
 }
 
@@ -225,9 +230,41 @@ $("vf-toggle").addEventListener("change", (e) => {
   send({ type: "voice_focus", value: e.target.checked });
 });
   try {
-    micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false },
-    });
+    // Echo cancellation is what makes barge-in safe: the agent plays through the
+    // speakers, and without cancellation Deepgram Flux hears that as the user
+    // starting a turn, cuts the reply off, transcribes the agent's own words and
+    // answers them. The symptom is the agent talking to itself.
+    //
+    // Asked for as a hard constraint, not a preference. A plain `true` is
+    // advisory and a browser may quietly ignore it; this fails loudly instead,
+    // and the fallback below then runs with barge-in's risk made visible.
+    //
+    // Noise suppression and gain control stay OFF on purpose. They would clean
+    // up the very signal Tyto is here to measure, and the meters would describe
+    // the browser's processing instead of the room. Voice Focus is the supported
+    // way to clean the audio, and it only touches what the agent hears.
+    const micWanted = {
+      echoCancellation: { exact: true },
+      noiseSuppression: false,
+      autoGainControl: false,
+      channelCount: 1,
+    };
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: micWanted });
+    } catch (err) {
+      log("error", "no echo cancellation available, expect the agent to hear itself");
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false },
+      });
+    }
+    // Report what the browser actually applied. Constraints are negotiated, so
+    // the only honest answer comes from the track itself.
+    const micSettings = micStream.getAudioTracks()[0]?.getSettings?.() || {};
+    log(micSettings.echoCancellation === false ? "error" : "mic.aec",
+        `echoCancellation=${micSettings.echoCancellation} ` +
+        `noiseSuppression=${micSettings.noiseSuppression} ` +
+        `autoGainControl=${micSettings.autoGainControl} ` +
+        `rate=${micSettings.sampleRate ?? "?"}`);
     micCtx = new AudioContext({ sampleRate: CAPTURE_RATE });
     if (micCtx.state === "suspended") await micCtx.resume();
     playCtx = new AudioContext({ sampleRate: PLAYBACK_RATE });
@@ -289,8 +326,11 @@ function playChunk(arrayBuffer) {
   for (let i = 0; i < pcm.length; i++) data[i] = pcm[i] / 32768;
   const node = playCtx.createBufferSource();
   node.buffer = buf; node.connect(playCtx.destination);
+  // Keep a small lead on the clock. Scheduling at exactly currentTime means any
+  // jitter in chunk arrival lands the next buffer in the past, which Web Audio
+  // plays immediately: several chunks then overlap and the voice tears.
   const now = playCtx.currentTime;
-  if (playHead < now) playHead = now;
+  if (playHead < now + PLAY_LEAD) playHead = now + PLAY_LEAD;
   node.start(playHead);
   playHead += buf.duration;
   activeSources++;

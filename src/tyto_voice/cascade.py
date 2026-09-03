@@ -1,11 +1,11 @@
-"""The cascaded voice provider: Deepgram Flux -> PhoneLLM on Modal -> Aura-2.
+"""The cascaded voice provider: Deepgram Flux -> an LLM -> Deepgram Aura-2.
 
 This is the backend behind the ``VoiceProvider`` seam, replacing the single
 speech-to-speech session the OpenAI Realtime provider opened. Everything the
 control layers need is still expressed through the same nine methods, so
 ``TytoController`` and ``decision.py`` did not have to learn anything new.
 
-    mic ──> FluxSTT ──(turn + transcript)──> PhoneLLM ──> DeepgramTTS ──> audio_out
+    mic ──> FluxSTT ──(turn + transcript)──> LLM ──> DeepgramTTS ──> audio_out
 
 Three services, one per job, which is the trade a cascade makes: more moving
 parts than speech-to-speech, in exchange for being able to see and cancel every
@@ -16,7 +16,7 @@ else's session.
 
 Speculation is what keeps it fast. Flux emits ``EagerEndOfTurn`` when it thinks
 the user is probably done, before it is sure, and guarantees the transcript will
-match the eventual ``EndOfTurn`` if the user really has stopped. So the PhoneLLM
+match the eventual ``EndOfTurn`` if the user really has stopped. So the LLM
 request is fired on the guess: when it holds, the reply is already in hand at
 ``EndOfTurn`` and goes straight to the voice, and the model's latency disappears
 into the turn gap entirely. When the user carries on talking, ``TurnResumed``
@@ -25,7 +25,7 @@ throws the speculation away and it cost nothing anybody heard.
 Threads:
     caller's audio thread   send_audio -> the Flux socket
     "deepgram-flux"         the listen socket's asyncio loop, emits turn events
-    "cascade-spec"          one per speculation: an early PhoneLLM request
+    "cascade-spec"          one per speculation: an early LLM request
     "cascade-turn"          one per turn: waits on the reply, hands it to TTS
     "deepgram-tts"          the speak socket's asyncio loop, emits agent audio
 
@@ -50,7 +50,7 @@ It is not a small switch. Leaving the microphone open while the agent talks
 closes an acoustic loop unless echo cancellation is genuinely removing our own
 voice. What survives is enough for Flux to hear as a turn, and then: the agent's
 own voice starts a turn, barge-in cuts the reply off, the echo is transcribed,
-PhoneLLM answers the agent's own words, and it goes round again. The symptom is
+the LLM answers the agent's own words, and it goes round again. The symptom is
 the agent talking to itself. Turn it on only where the microphone cannot hear
 the speaker.
 """
@@ -64,7 +64,7 @@ import numpy as np
 from .decision import VAD_PROFILES
 from .deepgram import DEFAULT_VOICE, PLAYBACK_RATE, DeepgramTTS
 from .flux import SAMPLE_RATE, FluxSTT
-from .phonellm import PhoneLLMClient
+from .llm import Backend, LLMClient
 from .provider import Handlers, VoiceProvider
 
 # How long to wait for the controller to answer a tool call. It answers
@@ -80,7 +80,7 @@ SPECULATION_TIMEOUT = 20.0
 
 
 class _Speculation:
-    """One PhoneLLM request fired on Flux's guess that the turn is over."""
+    """One LLM request fired on Flux's guess that the turn is over."""
 
     def __init__(self, turn_index: int, transcript: str):
         self.turn_index = turn_index
@@ -95,8 +95,7 @@ class CascadeProvider(VoiceProvider):
         self,
         handlers: Handlers,
         *,
-        endpoint_url: str,
-        modal_key: str,
+        backend: Backend,
         deepgram_key: str,
         instructions: str,
         audio_out,
@@ -127,9 +126,8 @@ class CascadeProvider(VoiceProvider):
             on_end_of_turn=self._on_end_of_turn,
             on_log=on_log,
         )
-        self.llm = PhoneLLMClient(
-            endpoint_url,
-            modal_key,
+        self.llm = LLMClient(
+            backend,
             instructions=instructions,
             tools=tools,
             on_log=on_log,
@@ -165,18 +163,19 @@ class CascadeProvider(VoiceProvider):
         self.tts.connect()
         self.stt.ready.wait(timeout=10.0)
         self.tts.ready.wait(timeout=10.0)
-        # Modal endpoints scale to zero, and waking a 30B model takes minutes.
-        # Warm it in the background: the greeting is spoken by the voice alone,
-        # so the demo is audible immediately either way.
+        # A backend that scales to zero takes minutes to wake. Warm it in the
+        # background: the greeting is spoken by the voice alone, so the demo is
+        # audible immediately either way. A hosted API returns at once.
         threading.Thread(target=self._warm_up, name="cascade-warmup", daemon=True).start()
         if self.h.on_ready:
             self.h.on_ready()
 
     def _warm_up(self) -> None:
+        name = self.llm.backend.name
         if self.llm.wait_until_ready():
-            self._log("llm.ready", "PhoneLLM endpoint is live")
+            self._log("llm.ready", f"{name} is live")
         else:
-            self._log("error", "PhoneLLM endpoint did not come up")
+            self._log("error", f"{name} did not come up")
 
     def disconnect(self) -> None:
         with self._lock:
@@ -225,7 +224,7 @@ class CascadeProvider(VoiceProvider):
     def interrupt(self, clear_input: bool = False) -> None:
         with self._lock:
             # Invalidate the turn in flight. Without this a worker still waiting
-            # on PhoneLLM would come back and speak its reply with no turn owning
+            # on the LLM would come back and speak its reply with no turn owning
             # it, and its Flushed would end whatever replaced it.
             self._turn_id += 1
         self._cancel_speculation()
@@ -299,7 +298,7 @@ class CascadeProvider(VoiceProvider):
             self.h.on_user_transcript(transcript, False)
 
     def _on_eager_end_of_turn(self, index: int, transcript: str) -> None:
-        """Flux thinks the user is done. Ask PhoneLLM now, on the guess."""
+        """Flux thinks the user is done. Ask the LLM now, on the guess."""
         if not transcript:
             return
         with self._lock:
@@ -356,6 +355,7 @@ class CascadeProvider(VoiceProvider):
     # -- a turn --------------------------------------------------------------- #
 
     def _run_speculation(self, spec: _Speculation) -> None:
+        """One early request, fired on Flux's guess that the turn is over."""
         try:
             spec.reply = self.llm.respond(
                 spec.transcript,

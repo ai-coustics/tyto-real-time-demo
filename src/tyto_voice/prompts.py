@@ -19,6 +19,23 @@ essay.
 
 Notes on the rules, so nobody "cleans them up" and regresses the demo:
 
+- The no-dash rule is worth its line: it took em dashes from 3 in 8 replies to
+  0. They are also read aloud badly.
+- The opening rule is NOT worth strengthening, and this is measured. PhoneLLM
+  restates a detail before reacting ("Six thirty? That's early", "Lasagne for
+  dinner, now that's a proper meal") in about six replies out of eight, and four
+  increasingly blunt variants of this instruction moved that number not at all:
+  an explicit ban on reusing the user's words, four worked Wrong/Right examples,
+  and a self-check step all measured 6/8, exactly the same as one mild sentence.
+  It is not promptable, because it is the thing the model was fine-tuned to do:
+  PhoneLLM is built for phone agents, where reading a detail back is correct.
+  Adding more words here only costs prefill on every turn. If the echo has to
+  go, it has to go in code after the reply, or by changing model.
+- Worked examples in this prompt are dangerous in a way abstract rules are not.
+  With examples close to the conversation, replies came back as the example
+  verbatim: "Right: 'That sounds peaceful. Is it quiet at that hour?'" was
+  spoken word for word on a turn about a canal walk. If you add any, keep the
+  subject matter far away from anything a visitor might actually say.
 - The check_audio_quality rule is explicit about greetings because "hey, how's
   it going?" tripped a tool call without it.
 - The no-numbers rule keeps the tool's raw JSON out of the agent's mouth: it
@@ -63,7 +80,8 @@ BASE_INSTRUCTIONS = (
     "directions, no preamble, no sign-off.\n"
     "Your words are read aloud, so punctuate them for a voice. Put a comma where you would draw "
     "breath and a full stop where you would land, and let questions end in a question mark.\n"
-    "Never open by restating, confirming or checking what they said. Just respond.\n"
+    "Open with your own reaction, not with their words, then add one short question.\n"
+    "Never use a dash of any kind. Use a comma or a full stop.\n"
     "Keep them talking. If a topic runs dry, start another one you are curious about. Anything "
     "light works: what they are into, what they ate, a strong opinion about something trivial.\n"
     "You are running inside a demo of Tyto, an audio model by ai-coustics, and you can explain it "

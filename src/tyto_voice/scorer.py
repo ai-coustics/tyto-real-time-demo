@@ -22,6 +22,7 @@ the model), or use :meth:`run_from_microphone` for the standalone mic demo.
 
 from __future__ import annotations
 
+import os
 import threading
 from typing import Callable
 
@@ -34,6 +35,11 @@ from .decision import HOP_SECONDS, SCORE_EMA_ALPHA, WINDOW_SECONDS, Scores
 # model version 7 and older SDKs refuse it.
 DEFAULT_MODEL = "tyto-1.1-l-16khz"
 
+# Where downloaded models are cached. A deployment that bakes them into its
+# image points AIC_MODELS_DIR at them so a container does not refetch on every
+# cold start.
+DEFAULT_MODELS_DIR = os.environ.get("AIC_MODELS_DIR", "./models")
+
 ScoresCallback = Callable[[Scores], None]
 StateCallback = Callable[[str, str], None]  # (state, human_text)
 
@@ -44,7 +50,7 @@ class LiveTytoScorer:
         license_key: str,
         *,
         model_id: str = DEFAULT_MODEL,
-        models_dir: str = "./models",
+        models_dir: str = DEFAULT_MODELS_DIR,
         sample_rate: int | None = None,
         hop_seconds: float = HOP_SECONDS,
         ema_alpha: float = SCORE_EMA_ALPHA,

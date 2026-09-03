@@ -1,4 +1,4 @@
-"""Tests for the Flux -> PhoneLLM -> Aura-2 cascade, with no network or audio.
+"""Tests for the Flux -> LLM -> Aura-2 cascade, with no network or audio.
 
 Two things are worth pinning here, because neither is obvious from reading the
 code and both are how the demo can go wrong in a way you only hear later:
@@ -19,7 +19,7 @@ import time
 from tyto_voice.cascade import CascadeProvider
 from tyto_voice.decision import VAD_PROFILES
 from tyto_voice.flux import FluxSTT, _threshold_query
-from tyto_voice.phonellm import Reply, _as_chat_tools
+from tyto_voice.llm import Reply, as_chat_tools, phonellm_backend
 from tyto_voice.provider import Handlers
 
 
@@ -185,8 +185,7 @@ class FakeSTT:
 def build():
     provider = CascadeProvider(
         Handlers(),
-        endpoint_url="http://example.invalid",
-        modal_key="wk-x.ws-y",
+        backend=phonellm_backend("http://example.invalid", "wk-x.ws-y"),
         deepgram_key="key",
         instructions="be brief",
         audio_out=lambda pcm: None,
@@ -275,16 +274,95 @@ def test_listen_gate_stops_forwarding_audio_and_voids_the_turn():
 
 
 # --------------------------------------------------------------------------- #
-# PhoneLLM: the tool shape                                                    #
+# LLM: the tool shape                                                    #
 # --------------------------------------------------------------------------- #
 
 
 def test_flat_repo_tools_become_chat_completions_tools():
     from tyto_voice.controller import CHECK_AUDIO_QUALITY_TOOL
 
-    tools = _as_chat_tools([CHECK_AUDIO_QUALITY_TOOL])
+    tools = as_chat_tools([CHECK_AUDIO_QUALITY_TOOL])
     assert tools[0]["type"] == "function"
     assert tools[0]["function"]["name"] == "check_audio_quality"
     assert tools[0]["function"]["parameters"]["type"] == "object"
     # Already-nested tools are passed through untouched.
-    assert _as_chat_tools(tools) == tools
+    assert as_chat_tools(tools) == tools
+
+
+# --------------------------------------------------------------------------- #
+# LLM backends: the body shapes are mutually exclusive                        #
+# --------------------------------------------------------------------------- #
+
+
+def test_backend_body_shapes_do_not_leak_into_each_other():
+    """Each parameter PhoneLLM requires is one gpt-5-mini rejects with a 400.
+
+    Measured against both live APIs: gpt-5-mini refuses max_tokens ("use
+    max_completion_tokens"), refuses temperature=0 ("only the default (1) is
+    supported"), and refuses chat_template_kwargs ("unknown parameter"). Sending
+    one body shape to the other backend fails every single turn, so this is
+    pinned rather than left to a reviewer to notice.
+    """
+    from tyto_voice.llm import openai_backend, phonellm_backend
+
+    phone = phonellm_backend("https://ep.example", "wk-x.ws-y")
+    assert phone.token_field == "max_tokens"
+    assert phone.body["temperature"] == 0
+    assert phone.body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert phone.cold_starts is True  # Modal Auto Endpoints scale to zero
+
+    gpt = openai_backend("sk-x")
+    assert gpt.token_field == "max_completion_tokens"
+    assert "temperature" not in gpt.body
+    assert "chat_template_kwargs" not in gpt.body
+    assert "max_tokens" not in gpt.body
+    # Both required to keep a reasoning model inside a turn gap: 1.09 s with
+    # them, 2.75 s without.
+    assert gpt.body["reasoning_effort"] == "minimal"
+    assert gpt.body["verbosity"] == "low"
+    assert gpt.cold_starts is False  # a hosted API is always up
+
+
+def test_backend_from_env_needs_the_keys_for_the_backend_it_picks(monkeypatch):
+    from tyto_voice.llm import backend_from_env
+    import pytest
+
+    for name in ("LLM_BACKEND", "OPENAI_API_KEY", "MODAL_ENDPOINT_URL", "MODAL_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(SystemExit):
+        backend_from_env()  # default backend, no OPENAI_API_KEY
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-x")
+    assert backend_from_env().name == "gpt-5-mini"
+
+    monkeypatch.setenv("LLM_BACKEND", "phonellm")
+    with pytest.raises(SystemExit):
+        backend_from_env()  # phonellm chosen, but no Modal keys
+
+    monkeypatch.setenv("MODAL_ENDPOINT_URL", "https://ep.example")
+    monkeypatch.setenv("MODAL_API_KEY", "wk-x.ws-y")
+    assert backend_from_env().name == "phonellm"
+
+
+def test_request_body_is_built_from_the_backend(monkeypatch):
+    """The one place the two shapes could still cross: _post."""
+    from tyto_voice.llm import LLMClient, openai_backend, phonellm_backend
+
+    seen = {}
+
+    def fake_post(self, messages):
+        backend = self.backend
+        seen[backend.name] = {
+            "model": backend.model,
+            backend.token_field: backend.token_budget,
+            **backend.body,
+        }
+        return {"content": "ok"}
+
+    monkeypatch.setattr(LLMClient, "_post", fake_post)
+    for backend in (phonellm_backend("https://ep.example", "k"), openai_backend("sk-x")):
+        LLMClient(backend, instructions="hi").respond("hello")
+
+    assert "max_tokens" in seen["phonellm"] and "max_completion_tokens" not in seen["phonellm"]
+    assert "max_completion_tokens" in seen["gpt-5-mini"] and "max_tokens" not in seen["gpt-5-mini"]

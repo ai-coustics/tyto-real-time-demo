@@ -22,10 +22,11 @@ Tyto measuring straight through the agent's own replies. The second is what lets
 a nudge interrupt a reply that is already being spoken.
 
 Keys live only here, never in the browser:
-    AIC_SDK_LICENSE     runs Tyto locally on this backend
-    MODAL_ENDPOINT_URL  the PhoneLLM Auto Endpoint
-    MODAL_API_KEY       its proxy token, <token-id>.<token-secret>
+    AIC_SDK_LICENSE     runs Tyto and Quail Voice Focus on this backend
     DEEPGRAM_API_KEY    Flux on the way in, Aura-2 on the way out
+    LLM_BACKEND         gpt-5-mini (default) or phonellm
+      gpt-5-mini  ->    OPENAI_API_KEY
+      phonellm    ->    MODAL_ENDPOINT_URL, MODAL_API_KEY
 
 Run:
     uv pip install -e ".[web]"
@@ -46,6 +47,7 @@ from tyto_voice.cascade import SAMPLE_RATE, CascadeProvider
 from tyto_voice.controller import CHECK_AUDIO_QUALITY_TOOL, TytoController
 from tyto_voice.decision import NUDGE_THRESHOLD_DEFAULT, VAD_PROFILES
 from tyto_voice.env import load_env
+from tyto_voice.llm import backend_from_env
 from tyto_voice.prompts import BASE_INSTRUCTIONS, GREETING
 from tyto_voice.provider import Handlers
 from tyto_voice.scorer import LiveTytoScorer
@@ -101,8 +103,7 @@ class Session:
         handlers = Handlers()
         provider = CascadeProvider(
             handlers,
-            endpoint_url=self.keys["endpoint"],
-            modal_key=self.keys["modal"],
+            backend=self.keys["backend"],
             deepgram_key=self.keys["deepgram"],
             instructions=BASE_INSTRUCTIONS,
             greeting=GREETING,
@@ -272,13 +273,13 @@ def main() -> None:
     load_env()
     keys = {
         "license": os.environ.get("AIC_SDK_LICENSE", ""),
-        "endpoint": os.environ.get("MODAL_ENDPOINT_URL", ""),
-        "modal": os.environ.get("MODAL_API_KEY", ""),
         "deepgram": os.environ.get("DEEPGRAM_API_KEY", ""),
     }
     missing = [name for name, value in keys.items() if not value]
     if missing:
         raise SystemExit(f"Missing: {', '.join(missing)} (see .env.example).")
+    # Raises with its own message if the chosen backend's keys are absent.
+    keys["backend"] = backend_from_env()
 
     app = web.Application()
     app["keys"] = keys
@@ -289,8 +290,11 @@ def main() -> None:
             web.get("/ws", ws_handler),
         ]
     )
-    host, port = "127.0.0.1", int(os.environ.get("PORT", "8080"))
-    print(f"Tyto web demo on http://{host}:{port}  (Ctrl-C to stop)")
+    # Loopback locally, which is what you want on a laptop. A container has to
+    # bind 0.0.0.0 or the platform's proxy cannot reach it, so HOST overrides.
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "8080"))
+    print(f"Tyto web demo on http://{host}:{port}  (brain: {keys['backend'].name}, Ctrl-C to stop)")
     web.run_app(app, host=host, port=port, print=None)
 
 

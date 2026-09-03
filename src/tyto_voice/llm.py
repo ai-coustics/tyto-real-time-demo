@@ -1,34 +1,34 @@
-"""Pipecat PhoneLLM on Modal, the brain of the cascade.
+"""The agent's brain, behind one OpenAI-compatible chat-completions client.
 
-PhoneLLM Alpha 1 (``pipecat-ai/phonellm-alpha-1``) is an open-weights model from
-the Pipecat team, fine-tuned for phone voice agents: short replies, accurate tool
-calling, and a time-to-first-token low enough that a cascade can feel like a
-speech-to-speech model. It is a mixture of experts, 32B total with 3.5B active,
-which is why a 30B-class model can answer inside a turn gap at all.
+Two backends are supported and they are not interchangeable by URL alone, which
+is the whole reason this file has a ``Backend`` type instead of three settings.
+Every request-body parameter PhoneLLM *requires* is one gpt-5-mini *rejects*:
 
-Modal serves it as an Auto Endpoint: an ordinary OpenAI-compatible server, so
-the wire format here is plain ``/v1/chat/completions``. Four things come from the
-model card and are load-bearing:
+    max_tokens            gpt-5-mini: 400, use max_completion_tokens
+    temperature: 0        gpt-5-mini: 400, only the default 1 is supported
+    chat_template_kwargs  gpt-5-mini: 400, unknown parameter
 
-- The model id must be exactly ``pipecat-ai/phonellm-alpha-1``.
-- ``temperature`` must be 0. This is the recommended inference setting and it
-  also makes the speculative path below sound sane: the reply the agent commits
-  to is the same one it would have produced without speculating.
-- Thinking must be off, via ``chat_template_kwargs={"enable_thinking": false}``.
-  PhoneLLM was trained to call tools correctly *without* thinking, so leaving it
-  on buys nothing and costs the whole reply in latency.
-- ``max_tokens`` is a runaway guard, not a length control. Replies are kept short
-  by instruction; the cap only stops a loop from being spoken out loud.
+So a backend owns its own body shape, and swapping is one environment variable.
 
-Replies are fetched whole rather than streamed. That reads like the wrong call
-for a voice agent, and it would be, except that the turn is speculated on: by
-the time Deepgram Flux commits the end of the turn the reply is usually already
-in hand (see ``cascade.py``). Streaming would win back time only on the turns
-speculation missed, at the cost of a partial-sentence chunker in front of the
-text-to-speech socket.
+    LLM_BACKEND=phonellm     Pipecat PhoneLLM on a Modal Auto Endpoint
+    LLM_BACKEND=gpt-5-mini   OpenAI (the default)
 
-History is plain text on both sides, so it is cheap to carry, and
-``MAX_HISTORY_TURNS`` bounds it.
+**PhoneLLM** (``pipecat-ai/phonellm-alpha-1``) is open weights, fine-tuned for
+phone voice agents, and served from a Modal Auto Endpoint. It is the reason this
+branch exists. Its one operational catch is that Modal Auto Endpoints scale to
+zero: the first request after a quiet spell answers 503 while a 30B model loads,
+which measured around 100 seconds here, and during that window the demo greets
+you and then cannot answer anything. That is a deployment setting, not the
+model, and it is fixed by keeping a container warm.
+
+**gpt-5-mini** is a hosted reasoning model, so the settings that matter are the
+ones that stop it thinking: ``reasoning_effort="minimal"`` and
+``verbosity="low"`` measured 1.09 s against 2.75 s with both left at their
+defaults, with zero reasoning tokens. A voice agent cannot afford the default.
+
+Replies are fetched whole rather than streamed, because the turn is speculated
+on: by the time Deepgram Flux commits the end of the turn the reply is usually
+already in hand (see ``cascade.py``).
 
 Only the standard library is used for transport, so this adds no dependency.
 """
@@ -41,26 +41,87 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
-MODEL = os.environ.get("PHONELLM_MODEL", "pipecat-ai/phonellm-alpha-1")
-
-# Spoken replies are short by instruction; this is only a runaway guard.
+# Spoken replies are short by instruction; the cap is only a runaway guard. It
+# is generous for gpt-5-mini because reasoning tokens are drawn from the same
+# budget, and a cap that a model spends entirely on thinking returns an empty
+# reply that a voice agent cannot use.
 MAX_TOKENS = 120
+MAX_COMPLETION_TOKENS = 400
 REQUEST_TIMEOUT = 30.0
 
 # Turns kept in history (a turn is one user utterance or one agent reply).
 MAX_HISTORY_TURNS = 16
 
-# Modal Auto Endpoints scale to zero. The first request after a quiet period
-# answers 503 while a container starts, which for a 30B model is minutes, not
-# seconds. Retrying inside a turn is pointless (the user is waiting), so a turn
-# gives up quickly; ``wait_until_ready`` is the one place that waits it out.
+# Statuses that mean "not up yet" rather than "wrong". Only PhoneLLM cold starts
+# produce these, but retrying is harmless either way.
 COLD_START_STATUS = (503, 502, 504)
 READY_POLL_SECONDS = 5.0
 
 USER_AGENT = "tyto-voice/0.1 (+https://github.com/ai-coustics)"
+
+
+@dataclass(frozen=True)
+class Backend:
+    """Everything that differs between one chat-completions server and another."""
+
+    name: str
+    base_url: str
+    model: str
+    api_key: str
+    # "max_tokens" or "max_completion_tokens"; see the module docstring.
+    token_field: str
+    token_budget: int
+    # Merged into every request body verbatim.
+    body: dict = field(default_factory=dict)
+    # Whether the endpoint scales to zero and is worth waiting for on connect.
+    cold_starts: bool = False
+
+
+def phonellm_backend(endpoint_url: str, api_key: str, model: str | None = None) -> Backend:
+    return Backend(
+        name="phonellm",
+        base_url=endpoint_url,
+        model=model or os.environ.get("PHONELLM_MODEL", "pipecat-ai/phonellm-alpha-1"),
+        api_key=api_key,
+        token_field="max_tokens",
+        token_budget=MAX_TOKENS,
+        # Both from the model card and both load-bearing: PhoneLLM is trained to
+        # call tools correctly without thinking, so leaving thinking on costs the
+        # whole reply in latency and buys nothing.
+        body={"temperature": 0, "chat_template_kwargs": {"enable_thinking": False}},
+        cold_starts=True,
+    )
+
+
+def openai_backend(api_key: str, model: str = "gpt-5-mini") -> Backend:
+    return Backend(
+        name=model,
+        base_url="https://api.openai.com",
+        model=model,
+        api_key=api_key,
+        token_field="max_completion_tokens",
+        token_budget=MAX_COMPLETION_TOKENS,
+        # No temperature: this model accepts only its default, and sending 0 is a
+        # 400. The two that are here are what keep it inside a turn gap.
+        body={"reasoning_effort": "minimal", "verbosity": "low"},
+    )
+
+
+def backend_from_env(on_log: Callable[[str, str], None] | None = None) -> Backend:
+    """Pick the backend from the environment. Raises if its keys are missing."""
+    choice = os.environ.get("LLM_BACKEND", "gpt-5-mini").strip().lower()
+    if choice == "phonellm":
+        url, key = os.environ.get("MODAL_ENDPOINT_URL"), os.environ.get("MODAL_API_KEY")
+        if not url or not key:
+            raise SystemExit("LLM_BACKEND=phonellm needs MODAL_ENDPOINT_URL and MODAL_API_KEY.")
+        return phonellm_backend(url, key)
+    key = os.environ.get("OPENAI_API_KEY")
+    if not key:
+        raise SystemExit(f"LLM_BACKEND={choice} needs OPENAI_API_KEY.")
+    return openai_backend(key, model=choice)
 
 
 @dataclass
@@ -69,7 +130,7 @@ class Reply:
     tool_calls: int = 0
 
 
-class PhoneLLMClient:
+class LLMClient:
     """One conversation. ``respond`` is blocking and expects a worker thread.
 
     ``respond`` deliberately does **not** touch history: a reply may be
@@ -79,19 +140,16 @@ class PhoneLLMClient:
 
     def __init__(
         self,
-        endpoint_url: str,
-        api_key: str,
+        backend: Backend,
         *,
         instructions: str,
         tools: list | None = None,
-        model: str = MODEL,
         on_log: Callable[[str, str], None] | None = None,
     ):
-        self._api_key = api_key
-        self._model = model
-        self._url = endpoint_url.rstrip("/") + "/v1/chat/completions"
-        self._models_url = endpoint_url.rstrip("/") + "/v1/models"
-        self._tools = _as_chat_tools(tools)
+        self.backend = backend
+        self._url = backend.base_url.rstrip("/") + "/v1/chat/completions"
+        self._models_url = backend.base_url.rstrip("/") + "/v1/models"
+        self._tools = as_chat_tools(tools)
         self._on_log = on_log
 
         self._lock = threading.Lock()
@@ -130,10 +188,11 @@ class PhoneLLMClient:
     def wait_until_ready(self, timeout: float = 600.0) -> bool:
         """Poll ``/v1/models`` until the endpoint answers, or give up.
 
-        Worth doing once at connect: a cold Modal container takes minutes to load
-        a 30B model, and a demo that fails the first turn instead of waiting for
-        it looks broken.
+        Only worth doing for a backend that scales to zero. A hosted API is
+        always up, so this returns immediately for one.
         """
+        if not self.backend.cold_starts:
+            return True
         deadline = time.monotonic() + timeout
         announced = False
         while time.monotonic() < deadline:
@@ -143,13 +202,13 @@ class PhoneLLMClient:
                     return True
             except urllib.error.HTTPError as err:
                 if err.code not in COLD_START_STATUS:
-                    self._log("error", f"phonellm: HTTP {err.code}")
+                    self._log("error", f"{self.backend.name}: HTTP {err.code}")
                     return False
             except Exception:  # noqa: BLE001 - network flake during a cold start
                 pass
             if not announced:
                 announced = True
-                self._log("llm.cold", "waking the PhoneLLM endpoint, this can take minutes")
+                self._log("llm.cold", f"waking {self.backend.name}, this can take minutes")
             time.sleep(READY_POLL_SECONDS)
         return False
 
@@ -162,12 +221,10 @@ class PhoneLLMClient:
         tool_handler: Callable[[str, str], dict] | None = None,
         cancelled: Callable[[], bool] | None = None,
     ) -> Reply | None:
-        """Answer one user utterance. Returns None if it was abandoned or failed.
+        """Answer one user utterance. Returns None if abandoned or failed.
 
         ``tool_handler(name, call_id)`` answers a tool call and its result is fed
-        back for a second pass. PhoneLLM is trained for exactly this and is the
-        reason ``check_audio_quality`` is still a real tool here rather than a
-        line of context pasted into every prompt.
+        back for a second pass, which is how ``check_audio_quality`` works.
 
         ``cancelled()`` is polled around each round trip so a Tyto nudge, or the
         user carrying on talking, can abandon a turn already in flight.
@@ -183,7 +240,7 @@ class PhoneLLMClient:
             try:
                 message = self._post(messages)
             except Exception as err:  # noqa: BLE001 - surfaced to the UI
-                self._log("error", f"phonellm: {err}")
+                self._log("error", f"{self.backend.name}: {err}")
                 return None
 
             calls = message.get("tool_calls") or []
@@ -214,19 +271,18 @@ class PhoneLLMClient:
 
     def _headers(self) -> dict:
         return {
-            "Authorization": f"Bearer {self._api_key}",
+            "Authorization": f"Bearer {self.backend.api_key}",
             "Content-Type": "application/json",
             "User-Agent": USER_AGENT,
         }
 
     def _post(self, messages: list) -> dict:
+        backend = self.backend
         body = {
-            "model": self._model,
+            "model": backend.model,
             "messages": messages,
-            "max_tokens": MAX_TOKENS,
-            # Both required by the model card. See the module docstring.
-            "temperature": 0,
-            "chat_template_kwargs": {"enable_thinking": False},
+            backend.token_field: backend.token_budget,
+            **backend.body,
         }
         if self._tools:
             body["tools"] = self._tools
@@ -255,7 +311,7 @@ class PhoneLLMClient:
             self._on_log(kind, text)
 
 
-def _as_chat_tools(tools: list | None) -> list:
+def as_chat_tools(tools: list | None) -> list:
     """Accept the repo's flat tool dicts and emit chat-completions shape.
 
     The Realtime API takes ``{"type": "function", "name": ..., "parameters":
