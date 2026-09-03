@@ -27,6 +27,8 @@ from .decision import (
     LABELS,
     MIN_EXPLANATION_VALUE,
     NO_POLARITY,
+    NUDGE_MAX_SECONDS,
+    NUDGE_MIN_PERSIST,
     NUDGE_THRESHOLD_DEFAULT,
     NUDGE_THRESHOLD_MAX,
     NUDGE_THRESHOLD_MIN,
@@ -62,16 +64,25 @@ class TytoController:
         scorer,
         *,
         nudge_threshold: float = NUDGE_THRESHOLD_DEFAULT,
+        room_advice: bool = True,
+        pause_scoring_while_speaking: bool = True,
         on_update: Callable[[dict], None] | None = None,
         on_log: Callable[[str, str], None] | None = None,
     ):
         self.provider = provider
         self.scorer = scorer
+        # Whether the Aware note carries the cause's standing advice as well as
+        # the state. See room_state_summary: a terse agent speaks the advice.
+        self.room_advice = room_advice
+        # Whether Tyto stops measuring while the agent talks. See
+        # _sync_scoring_gate: this is what decides whether the Reactive layer can
+        # interrupt a reply that is already in progress.
+        self.pause_scoring_while_speaking = pause_scoring_while_speaking
         self.on_update = on_update
         self.on_log = on_log
 
         self._lock = threading.RLock()
-        self._monitor = EnvMonitor(min_persist=1, threshold=nudge_threshold)
+        self._monitor = EnvMonitor(min_persist=NUDGE_MIN_PERSIST, threshold=nudge_threshold)
 
         self.connected = False
         self.listening = True
@@ -80,6 +91,8 @@ class TytoController:
         self.awaiting_nudge = False
         self.nudge_active = False
         self.nudge_playback_pending = False
+        # Fires if the nudge gate is never reopened by a playback report.
+        self._nudge_timer: threading.Timer | None = None
 
         self._last_room = ""
         self._last_vad = "eager"
@@ -107,7 +120,7 @@ class TytoController:
             self._last_scores = scores
             self._last_risk = scores.risk_score
 
-            room = room_state_summary(scores)
+            room = room_state_summary(scores, include_advice=self.room_advice)
             vad = pick_vad_profile(scores)
 
             if room != self._last_room:  # Layer 1 - Aware
@@ -180,21 +193,51 @@ class TytoController:
     # -- Layer 3 internals (mirror the browser state machine) --------------- #
 
     def _fire_nudge(self, directive: Nudge) -> None:
+        """Take the floor, whoever currently has it.
+
+        Both cancellations are unconditional and both are the point. The user's
+        audio is cut and the turn in progress is thrown away, so the half
+        sentence they were talked over is never answered; and the agent's own
+        output is cancelled, so a reply already being spoken stops mid-word
+        rather than the nudge queueing up behind it. The guard below is only
+        against nudging on top of a nudge.
+        """
         if self.awaiting_nudge or self.nudge_active or not self.listening:
             return
         self._log("tyto.nudge.trip", f"{directive.label}={directive.value:.2f}")
-        # Cut the user's audio and the agent's output, then nudge immediately.
         self._set_mic_enabled(False)
         self._set_listening(False)
         self._sync_scoring_gate()
         self._interrupt_agent_speech(clear_input=True)
         self.awaiting_nudge = True
+        self._arm_nudge_watchdog()
         self.provider.nudge(directive.text)
         self._log("tyto.nudge.dispatch", directive.text)
         if self.on_update:
             self.on_update({"nudge": {"label": directive.label, "value": directive.value, "text": directive.text}})
 
+    def _arm_nudge_watchdog(self) -> None:
+        """Guarantee the microphone comes back. See NUDGE_MAX_SECONDS."""
+        self._cancel_nudge_watchdog()
+        timer = threading.Timer(NUDGE_MAX_SECONDS, self._nudge_watchdog_fired)
+        timer.daemon = True
+        self._nudge_timer = timer
+        timer.start()
+
+    def _cancel_nudge_watchdog(self) -> None:
+        if self._nudge_timer is not None:
+            self._nudge_timer.cancel()
+            self._nudge_timer = None
+
+    def _nudge_watchdog_fired(self) -> None:
+        with self._lock:
+            if not (self.awaiting_nudge or self.nudge_active or self.nudge_playback_pending):
+                return  # the normal path already resumed; nothing to rescue
+            self._log("tyto.nudge.timeout", "no playback report, reopening input")
+            self._resume_after_nudge()
+
     def _resume_after_nudge(self) -> None:
+        self._cancel_nudge_watchdog()
         self.nudge_active = False
         self.awaiting_nudge = False
         self.nudge_playback_pending = False
@@ -230,9 +273,31 @@ class TytoController:
         self.provider.set_turn_detection(VAD_PROFILES.get(self._last_vad) if on else None)
 
     def _sync_scoring_gate(self) -> None:
-        should_score = (
-            self.connected and self.listening and not self.agent_speaking and not self.agent_audio_playing
-        )
+        """Decide whether Tyto should be measuring right now.
+
+        Pausing while the agent talks is the safe default: on a raw output
+        device the mic hears the agent, and Tyto would score the agent's voice
+        instead of the user's room.
+
+        It costs two things, and both matter here. Every pause ends in
+        ``scorer.resume()``, which resets the analyzer and demands a fresh 5 s
+        window; in a conversation of ordinary short turns that window never
+        fills, so Tyto produces no readings at all. And with no readings while
+        the agent is talking, the Reactive layer can never fire during a reply,
+        which is precisely when interrupting is most useful.
+
+        Where the mic is captured with echo cancellation the agent's own voice is
+        not in the signal, so there is nothing to protect against. Setting
+        ``pause_scoring_while_speaking=False`` there keeps Tyto measuring
+        continuously, which is what the web demo does.
+        """
+        if self.pause_scoring_while_speaking:
+            should_score = (
+                self.connected and self.listening
+                and not self.agent_speaking and not self.agent_audio_playing
+            )
+        else:
+            should_score = self.connected and self.listening
         if should_score and not self.scorer.scoring:
             self.scorer.resume()
         elif not should_score and self.scorer.scoring:
@@ -248,7 +313,7 @@ class TytoController:
             value = getattr(scores, key)
             if value < MIN_EXPLANATION_VALUE:
                 continue
-            low = THRESHOLDS.get(key, (0.30, 0.60))[0]
+            low = THRESHOLDS.get(key, (0.30, 0.50))[0]
             severity = max(0.0, value - low) / max(1 - low, 1e-6)
             if best is None or severity > best["severity"]:
                 best = {"key": key, "value": value, "severity": severity}

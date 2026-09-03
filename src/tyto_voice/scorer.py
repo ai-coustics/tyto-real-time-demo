@@ -22,6 +22,7 @@ the model), or use :meth:`run_from_microphone` for the standalone mic demo.
 
 from __future__ import annotations
 
+import os
 import threading
 from typing import Callable
 
@@ -29,9 +30,15 @@ import numpy as np
 
 from .decision import HOP_SECONDS, SCORE_EMA_ALPHA, WINDOW_SECONDS, Scores
 
-# Model published on the ai-coustics artifact CDN. Same model family as the
-# browser demo (tyto-l-16khz), so scores are comparable.
-DEFAULT_MODEL = "tyto-l-16khz"
+# Model published on the ai-coustics artifact CDN. Same model as the browser
+# demo (Tyto 1.1), so scores are comparable. Needs aic-sdk 3.x: Tyto 1.1 ships as
+# model version 7 and older SDKs refuse it.
+DEFAULT_MODEL = "tyto-1.1-l-16khz"
+
+# Where downloaded models are cached. A deployment that bakes them into its
+# image points AIC_MODELS_DIR at them so a container does not refetch on every
+# cold start.
+DEFAULT_MODELS_DIR = os.environ.get("AIC_MODELS_DIR", "./models")
 
 ScoresCallback = Callable[[Scores], None]
 StateCallback = Callable[[str, str], None]  # (state, human_text)
@@ -43,7 +50,7 @@ class LiveTytoScorer:
         license_key: str,
         *,
         model_id: str = DEFAULT_MODEL,
-        models_dir: str = "./models",
+        models_dir: str = DEFAULT_MODELS_DIR,
         sample_rate: int | None = None,
         hop_seconds: float = HOP_SECONDS,
         ema_alpha: float = SCORE_EMA_ALPHA,
@@ -61,14 +68,14 @@ class LiveTytoScorer:
 
         # Audio config, filled in by start().
         self.sample_rate = 0
-        self.num_frames = 0
-        self.num_channels = 1
+        self.block_size = 0
 
         self._collector = None
         self._analyzer = None
         self._window_samples = 0
 
         self._lock = threading.Lock()
+        self._warm = False  # has a score been emitted since the last reset?
         self._buffered = 0  # real samples since the last reset (warm-up gate)
         self._residual = np.empty(0, dtype=np.float32)  # leftover < one block
         self._scoring = True
@@ -88,10 +95,9 @@ class LiveTytoScorer:
         model = aic.Model.from_file(model_path)
 
         rate = self._requested_rate or model.get_optimal_sample_rate()
-        config = aic.ProcessorConfig.optimal(model, sample_rate=rate, num_channels=1)
+        config = aic.ProcessorConfig.optimal(model, sample_rate=rate)
         self.sample_rate = config.sample_rate
-        self.num_frames = config.num_frames
-        self.num_channels = config.num_channels
+        self.block_size = config.block_size
         self._window_samples = round(WINDOW_SECONDS * self.sample_rate)
 
         self._collector, self._analyzer = aic.analyzer_pair(model, self._license_key)
@@ -112,17 +118,18 @@ class LiveTytoScorer:
     def feed(self, mono: np.ndarray) -> None:
         """Buffer mono float32 audio of any length. Dropped while paused.
 
-        The SDK requires each ``buffer`` call to be exactly ``num_frames``, so we
-        accumulate a residual and emit fixed-size blocks (just like the browser
-        worker turns 128-sample worklet quanta into model-sized blocks).
+        The SDK requires each ``buffer`` call to be exactly ``block_size`` mono
+        samples, so we accumulate a residual and emit fixed-size blocks (just
+        like the browser worker turns 128-sample worklet quanta into model-sized
+        blocks).
         """
         with self._lock:
             if not self._scoring or self._collector is None:
                 return
             data = np.concatenate([self._residual, np.ascontiguousarray(mono, dtype=np.float32)])
-            offset, n = 0, self.num_frames
+            offset, n = 0, self.block_size
             while len(data) - offset >= n:
-                self._collector.buffer(data[offset : offset + n].reshape(1, n))
+                self._collector.buffer(data[offset : offset + n])
                 offset += n
                 self._buffered += n
             self._residual = data[offset:]
@@ -145,6 +152,10 @@ class LiveTytoScorer:
             self._buffered = 0
             self._residual = np.empty(0, dtype=np.float32)
             self._scoring = True
+            self._warm = False
+        # Say so: until a full fresh window is buffered there are no new scores,
+        # and a UI still reading "scoring" just looks frozen.
+        self._emit_state("warming", "re-warming - keep talking")
 
     @property
     def scoring(self) -> bool:
@@ -165,7 +176,7 @@ class LiveTytoScorer:
             samplerate=self.sample_rate,
             channels=1,
             dtype="float32",
-            blocksize=self.num_frames,
+            blocksize=self.block_size,
             callback=callback,
         ):
             self._stop.wait()
@@ -173,7 +184,6 @@ class LiveTytoScorer:
     # -- internals ---------------------------------------------------------- #
 
     def _loop(self) -> None:
-        first = True
         while not self._stop.wait(self._hop_seconds):
             with self._lock:
                 ready = self._scoring and self._buffered >= self._window_samples
@@ -186,8 +196,8 @@ class LiveTytoScorer:
                 continue
             raw = Scores.from_result(result)
             self._smoothed = raw.ema(self._smoothed, self._ema_alpha)
-            if first:
-                first = False
+            if not self._warm:
+                self._warm = True
                 self._emit_state("live", "scoring")
             if self.on_scores:
                 self.on_scores(self._smoothed)

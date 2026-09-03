@@ -3,29 +3,28 @@ name = "tyto-voice"
 version = "0.1.0"
 description = "Python reference for the Tyto acoustics-aware voice-agent demo"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
-    "aic-sdk",
+    # 3.x is required: Tyto 1.1 is a model-version-7 artifact, and the streaming
+    # analyzer API changed with it (mono buffers, block_size, codec_degradation).
+    "aic-sdk>=3.1",
     "numpy>=1.24",
     "sounddevice>=0.4",
-]
-
-[project.optional-dependencies]
-# The terminal voice agent adds the OpenAI Realtime WebSocket client.
-agent = ["websockets>=13"]
-# The browser demo adds the web server.
-web = ["websockets>=13", "aiohttp>=3.9"]
-# The Pipecat browser demo: a Pipecat pipeline (OpenAI Realtime) over WebRTC.
-# pipecat-ai 1.4 requires Python >=3.11, so it is gated by a marker; the rest of
-# the project still supports 3.10. Install this extra on Python 3.11+.
-pipecat = [
-    "pipecat-ai[openai,webrtc]>=1.4; python_version >= '3.11'",
+    # The whole voice stack, one extra per service in the cascade:
+    #   deepgram -> Flux STT on the way in, Aura-2 TTS on the way out
+    #   openai   -> gpt-5-mini in the middle
+    #   webrtc   -> SmallWebRTCTransport, the browser's audio and data channel
+    # Pinned exactly: this demo is verified against 1.8.1 and nothing else.
+    "pipecat-ai[deepgram,openai,webrtc]==1.8.1",
     "fastapi>=0.115",
     "uvicorn>=0.30",
 ]
-# Everything, plus the test runner.
-dev = ["websockets>=13", "aiohttp>=3.9", "pytest>=8"]
+
+[project.optional-dependencies]
+# Only the test runner is optional. There is one code path now, so the voice
+# stack is a hard dependency rather than something to opt into.
+dev = ["pytest>=8"]
 
 [build-system]
 requires = ["hatchling"]

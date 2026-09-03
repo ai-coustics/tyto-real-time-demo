@@ -1,25 +1,24 @@
-"""Pipecat web demo backend: the Tyto voice agent over a Pipecat pipeline.
+"""The Tyto demo backend: a cascaded voice agent that adapts to your acoustics.
 
-Same demo and same browser UI as ``examples/web``, but the voice backend is a
-Pipecat pipeline (OpenAI Realtime speech-to-speech) reached over WebRTC instead
-of a hand-written WebSocket relay. The browser is still a thin client: it
-captures the mic, plays the agent, and renders the UI; all scoring, the three
-adaptation layers, and the keys live here.
+One process. The browser captures the microphone, plays the agent, and draws the
+UI; everything else, the scoring, the three adaptation layers, and all three API
+keys, lives here.
 
 Per browser connection, one session::
 
-    browser mic  ── WebRTC audio ─>  SmallWebRTCTransport -> scorer.feed + agent
-    agent audio  <─ WebRTC audio ──  pipeline output
-    scores / room / vad / nudge  <─ WebRTC data channel ──  controller
+    browser mic  -- WebRTC audio -->  Tyto scores it, then the agent hears it
+    agent audio  <-- WebRTC audio --  Deepgram Aura-2
+    scores / room / vad / nudge  <-- WebRTC data channel --  controller
 
-The decision layer, scorer, and controller are shared with every other Tyto
-frontend; only the provider ([pipecat_provider.py](../../src/tyto_voice/pipecat_provider.py))
-is specific to this stack.
+The voice stack is a Pipecat cascade, Deepgram Flux to gpt-5-mini to Deepgram
+Aura-2, built in [cascade.py](../../src/tyto_voice/cascade.py). The decision
+layer, scorer, and controller are shared with every other Tyto frontend and know
+nothing about it.
 
 Run::
 
-    uv pip install -e ".[pipecat]"
-    # put AIC_SDK_LICENSE and OPENAI_API_KEY in .env
+    uv pip install -e ".[dev]"
+    # put AIC_SDK_LICENSE, DEEPGRAM_API_KEY and OPENAI_API_KEY in .env
     uv run examples/pipecat/server.py        # then open http://localhost:8080
 """
 
@@ -31,13 +30,14 @@ Run::
 import os
 from pathlib import Path
 
+from tyto_voice.cascade import SAMPLE_RATE, CascadeProvider
 from tyto_voice.controller import TytoController
 from tyto_voice.decision import VAD_PROFILES
 from tyto_voice.env import load_env
-from tyto_voice.pipecat_provider import SAMPLE_RATE, PipecatRealtimeProvider
-from tyto_voice.prompts import BASE_INSTRUCTIONS
+from tyto_voice.prompts import BASE_INSTRUCTIONS, GREETING
 from tyto_voice.provider import Handlers
 from tyto_voice.scorer import LiveTytoScorer
+from tyto_voice.voicefocus import VoiceFocus
 
 HERE = Path(__file__).parent
 INDEX = HERE / "index.html"
@@ -45,20 +45,17 @@ APP_JS = HERE / "app.js"
 
 
 class Session:
-    """One WebRTC connection wired to a scorer, provider, and controller.
-
-    Mirrors the ``Session`` in ``examples/web/server.py``: the brain runs here,
-    the browser is a thin client. The only differences are the transport
-    (WebRTC, owned by Pipecat) and that UI messages go over the data channel.
-    """
+    """One WebRTC connection wired to a scorer, provider, and controller."""
 
     def __init__(self, connection, keys: dict):
         self.connection = connection
         self.keys = keys
         self.scorer: LiveTytoScorer | None = None
-        self.provider: PipecatRealtimeProvider | None = None
+        self.voice_focus: VoiceFocus | None = None
+        self.provider: CascadeProvider | None = None
         self.controller: TytoController | None = None
         self._last_tyto_state: dict | None = None
+        self._load_task = None
 
     async def start(self) -> None:
         import asyncio
@@ -69,11 +66,23 @@ class Session:
             sample_rate=SAMPLE_RATE,
             on_state=self._on_tyto_state,
         )
-        provider = PipecatRealtimeProvider(
+        # Optional Quail enhancement on the agent's input only. Off by default:
+        # a visitor should meet their room as it is, and the switch is what shows
+        # the difference.
+        voice_focus = VoiceFocus(
+            self.keys["license"],
+            sample_rate=SAMPLE_RATE,
+            on_log=lambda k, t: self._send({"type": "log", "kind": k, "text": t}),
+        )
+
+        provider = CascadeProvider(
             handlers,
-            api_key=self.keys["openai"],
+            deepgram_key=self.keys["deepgram"],
+            openai_key=self.keys["openai"],
             instructions=BASE_INSTRUCTIONS,
+            greeting=GREETING,
             scorer=scorer,
+            voice_focus=voice_focus,
             webrtc_connection=self.connection,
             turn_detection=VAD_PROFILES["eager"],
             on_client_message=self._on_client_message,
@@ -83,6 +92,14 @@ class Session:
         controller = TytoController(
             provider,
             scorer,
+            # The agent is terse, and the room note's advice is phrased as an
+            # instruction, so a terse agent reads it out loud. Give it the state
+            # only and let it shape the tone.
+            room_advice=False,
+            # The browser captures with echo cancellation, so the agent's own
+            # voice is not in the signal and Tyto can keep measuring straight
+            # through a reply. That is what lets Layer 3 interrupt one.
+            pause_scoring_while_speaking=False,
             on_update=self._on_update,
             on_log=lambda k, t: self._send({"type": "log", "kind": k, "text": t}),
         )
@@ -94,29 +111,53 @@ class Session:
         handlers.on_agent_audio = controller.on_agent_audio
         handlers.on_user_transcript = controller.on_user_transcript
         handlers.on_agent_transcript = controller.on_agent_transcript
-        # on_tool_call is intentionally unwired: this backend answers the tool
-        # with a registered Pipecat function handler instead.
+        # on_tool_call is intentionally unwired: check_audio_quality is answered
+        # by a registered Pipecat function handler instead.
 
         self.scorer, self.provider, self.controller = scorer, provider, controller
+        self.voice_focus = voice_focus
 
-        # The model download + license check is blocking, so keep it off the
-        # event loop. A scorer failure is non-fatal: the pipeline still runs so
-        # the agent works and the error can be shown over the data channel.
-        # State messages emitted here are remembered and (re)sent once the data
-        # channel is up (see _on_connected); sending them now would race it.
-        try:
-            await asyncio.get_event_loop().run_in_executor(None, scorer.start)
-        except Exception as err:  # noqa: BLE001 - surface to the browser
-            self._on_tyto_state("error", str(err))
-
+        # Start the voice stack FIRST, before the models load.
+        #
+        # Both loads hit the network for a manifest and then read a model off
+        # disk, which is a second or two, and the browser starts sending audio
+        # the moment the connection is up. Loading first meant that audio had
+        # nowhere to go: the pipeline did not exist yet, so a visitor who spoke
+        # straight after clicking the mic lost their first utterance and saw no
+        # transcript for it. Neither component minds being called early: the
+        # scorer drops audio until its collector exists, and Voice Focus is a
+        # passthrough until its processor does.
         provider.connect()  # builds and runs the pipeline on this loop
         controller.set_connected(True)
 
+        loop = asyncio.get_event_loop()
+
+        async def _load_models() -> None:
+            # A scorer failure is non-fatal: the agent still works, and the
+            # error is shown in the browser. Same for Voice Focus, whose switch
+            # is simply shown disabled. State emitted here is remembered and
+            # re-sent once the data channel is up.
+            try:
+                await loop.run_in_executor(None, scorer.start)
+            except Exception as err:  # noqa: BLE001 - surface to the browser
+                self._on_tyto_state("error", str(err))
+            try:
+                await loop.run_in_executor(None, voice_focus.start)
+            except Exception as err:  # noqa: BLE001 - optional feature
+                self._send({"type": "log", "kind": "error", "text": str(err)})
+            self._send_voice_focus()
+
+        self._load_task = asyncio.ensure_future(_load_models())
+
     def stop(self) -> None:
+        if self._load_task and not self._load_task.done():
+            self._load_task.cancel()
         if self.controller:
             self.controller.set_connected(False)
         if self.scorer:
             self.scorer.stop()
+        if self.voice_focus:
+            self.voice_focus.stop()
         if self.provider:
             self.provider.disconnect()
 
@@ -126,11 +167,18 @@ class Session:
         if "scores" in state:
             scores = state["scores"]
             self._send(
-                {"type": "scores", "scores": scores.as_dict(), "room": state.get("room", ""), "vad": state.get("vad", "eager")}
+                {
+                    "type": "scores",
+                    "scores": scores.as_dict(),
+                    "room": state.get("room", ""),
+                    "vad": state.get("vad", "eager"),
+                }
             )
         elif "transcript" in state:
             tx = state["transcript"]
-            self._send({"type": "transcript", "who": tx["who"], "text": tx["text"], "final": tx["final"]})
+            self._send(
+                {"type": "transcript", "who": tx["who"], "text": tx["text"], "final": tx["final"]}
+            )
         elif "nudge" in state:
             self._send({"type": "nudge", **state["nudge"]})
 
@@ -140,14 +188,32 @@ class Session:
 
     def _on_connected(self) -> None:
         # The data channel is up now, so this reliably reaches the browser even
-        # if the early (pre-connection) sends were dropped.
+        # if the early, pre-connection sends were dropped.
         self._send({"type": "status", "state": "live", "label": "Live"})
         if self._last_tyto_state:
             self._send(self._last_tyto_state)
+        self._send_voice_focus()
+
+    def _send_voice_focus(self) -> None:
+        """The server owns this state: only it knows whether the model loaded."""
+        vf = self.voice_focus
+        self._send(
+            {
+                "type": "voice_focus",
+                "available": bool(vf and vf.available),
+                "on": bool(vf and vf.enabled),
+            }
+        )
 
     def _on_client_message(self, message: dict) -> None:
-        if message.get("type") == "nudge_threshold" and self.controller:
-            self.controller.nudge_threshold = float(message.get("value", 0.5))
+        kind = message.get("type")
+        if kind == "nudge_threshold" and self.controller:
+            self.controller.nudge_threshold = float(message.get("value", 0.31))
+        elif kind == "voice_focus" and self.provider:
+            # Answer with the state actually reached, not the one requested: it
+            # stays off if the model is unavailable.
+            self.provider.set_voice_focus(bool(message.get("value")))
+            self._send_voice_focus()
 
     def _send(self, message: dict) -> None:
         if self.provider:
@@ -161,7 +227,7 @@ class Session:
 
 def build_app(keys: dict):
     from fastapi import FastAPI, Request
-    from fastapi.responses import FileResponse, JSONResponse
+    from fastapi.responses import FileResponse, JSONResponse, Response
     from pipecat.transports.smallwebrtc.request_handler import (
         SmallWebRTCRequest,
         SmallWebRTCRequestHandler,
@@ -181,8 +247,6 @@ def build_app(keys: dict):
 
     @app.get("/favicon.ico")
     async def favicon():
-        from fastapi.responses import Response
-
         return Response(status_code=204)
 
     @app.post("/api/offer")
@@ -190,9 +254,9 @@ def build_app(keys: dict):
         body = await request.json()
         webrtc_request = SmallWebRTCRequest.from_dict(body)
 
-        # The callback fires only for a brand-new connection (not for the
-        # renegotiations the handler manages internally), so it's the right
-        # place to spin up exactly one Tyto session per visitor.
+        # Fires only for a brand-new connection, not for the renegotiations the
+        # handler manages internally, so it is the right place to spin up
+        # exactly one Tyto session per visitor.
         async def on_new_connection(connection):
             session = Session(connection, keys)
 
@@ -218,13 +282,16 @@ def main() -> None:
     load_env()
     keys = {
         "license": os.environ.get("AIC_SDK_LICENSE", ""),
+        "deepgram": os.environ.get("DEEPGRAM_API_KEY", ""),
         "openai": os.environ.get("OPENAI_API_KEY", ""),
     }
-    if not keys["license"] or not keys["openai"]:
-        raise SystemExit("Set AIC_SDK_LICENSE and OPENAI_API_KEY (see .env.example).")
+    if not all(keys.values()):
+        raise SystemExit(
+            "Set AIC_SDK_LICENSE, DEEPGRAM_API_KEY and OPENAI_API_KEY (see .env.example)."
+        )
 
     host, port = "127.0.0.1", int(os.environ.get("PORT", "8080"))
-    print(f"Tyto Pipecat demo on http://{host}:{port}  (Ctrl-C to stop)")
+    print(f"Tyto demo on http://{host}:{port}  (Ctrl-C to stop)")
     uvicorn.run(build_app(keys), host=host, port=port, log_level="warning")
 
 

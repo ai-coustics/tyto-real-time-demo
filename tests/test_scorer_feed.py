@@ -1,6 +1,6 @@
 """Test the scorer's block accumulation without the SDK or a microphone.
 
-feed() must emit exactly num_frames-sized buffers regardless of the caller's
+feed() must emit exactly block_size-sized mono buffers regardless of the caller's
 block size, and must drop audio while paused.
 """
 
@@ -14,20 +14,22 @@ class FakeCollector:
         self.sizes = []
 
     def buffer(self, block):
-        assert block.shape[0] == 1  # mono, shape (1, num_frames)
-        self.sizes.append(block.shape[1])
+        # aic-sdk 3.x buffers mono: one 1D float32 array of exactly block_size.
+        assert block.ndim == 1
+        assert block.dtype == np.float32
+        self.sizes.append(block.shape[0])
 
 
-def make_scorer(num_frames=160):
+def make_scorer(block_size=160):
     scorer = LiveTytoScorer("dummy")
-    scorer.num_frames = num_frames
+    scorer.block_size = block_size
     scorer._collector = FakeCollector()
     return scorer
 
 
 def test_feed_emits_fixed_size_blocks():
-    scorer = make_scorer(num_frames=160)
-    # Feed 500 samples in odd-sized chunks; expect 3 full 160-frame blocks.
+    scorer = make_scorer(block_size=160)
+    # Feed 500 samples in odd-sized chunks; expect 3 full 160-sample blocks.
     scorer.feed(np.zeros(100, dtype=np.float32))
     scorer.feed(np.zeros(100, dtype=np.float32))
     scorer.feed(np.zeros(100, dtype=np.float32))

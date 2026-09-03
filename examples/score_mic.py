@@ -43,7 +43,7 @@ CLEAR = "\033[2J\033[H"  # clear screen, cursor home
 def color(key: str, value: float) -> str:
     if key in NO_POLARITY:
         return "\033[36m"  # cyan: informational
-    low, high = THRESHOLDS.get(key, (0.30, 0.60))
+    low, high = THRESHOLDS.get(key, (0.30, 0.50))
     return "\033[32m" if value < low else "\033[33m" if value < high else "\033[31m"
 
 

@@ -4,7 +4,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Tyto — Audio Insights</title>
+  <title>Tyto Audio insight</title>
+  <link rel="icon" type="image/png" media="(prefers-color-scheme: dark)"
+        href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAHlBMVEVMaXH////////////////////////////////////Z6AnKAAAACXRSTlMAAxux7FrVmX0FRZq3AAAACXBIWXMAAA7EAAAOxAGVKw4bAAAA7klEQVR42u2W2w7DIAhARUDl/394trPb7LoqkOzJk/ShTThcNNYQFovF/4ENR7Qze30il8zm9LGgVNCYHgqJmAU1fRKxCyAwiUNQ40Ucgj7eUsG7f5MAQhaP4Ggg5WQV7AWkGCDZWoj0DDtaQVsHFJtJL2gjJDRtZTg6d6yCVgDxBKkEW8vUI2rBgBzgVlC8Ah4JeCD4GtqJuqMG4L0AdaeHtoPLndORIPhKGBdwPwU0nIFdA3GmgN9LSVPx/X9In78ZLuaA0/H7OcKnIhJDAN1RxPgaBaEy/OM+USkc2we94vpFeakC7+VosVhM8QAZYRZoqv1m6wAAAABJRU5ErkJggg==" />
+  <link rel="icon" type="image/png" media="(prefers-color-scheme: light)"
+        href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAHlBMVEVMaXEDAgMUExQVExUVFBUVFBUVFBUREBEWFBYXFheE60K5AAAACXRSTlMAAzWMY73fFaA4/m4/AAAACXBIWXMAAA7EAAAOxAGVKw4bAAAA7ElEQVR42u2WUQ7DIAhAAUHl/heeW2OztllRSPflS/pXXgURC7BYLP4PIoaigx9vD6UqDC5RC6KUtZFcAoRSdcMlQOCsAQFCUg0IDvEOQVu/RgQIpCEBgIQEPQFh8a7gEyitE7JH0CvwDqs+wZZBpl7L6RR6CfNoEfFAz9y/C0UnBXSCZwWiBg8L+mbfwIaALQEZAjLic5k7exeqUUMzBzL76NJ6B2R2gM0v4L4KIwcBb5IQHJwhPwxSIGQYjT/chN/54/gkaC/yqZRCs7MQue6J5EQwfyG1niLmlJgJATx3MsZ/b/bRulgsnucFUncXASIl174AAAAASUVORK5CYII=" />
+  <link rel="apple-touch-icon"
+        href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAHlBMVEVMaXH////////////////////////////////////Z6AnKAAAACXRSTlMAAxux7FrVmX0FRZq3AAAACXBIWXMAAA7EAAAOxAGVKw4bAAAA7klEQVR42u2W2w7DIAhARUDl/394trPb7LoqkOzJk/ShTThcNNYQFovF/4ENR7Qze30il8zm9LGgVNCYHgqJmAU1fRKxCyAwiUNQ40Ucgj7eUsG7f5MAQhaP4Ggg5WQV7AWkGCDZWoj0DDtaQVsHFJtJL2gjJDRtZTg6d6yCVgDxBKkEW8vUI2rBgBzgVlC8Ah4JeCD4GtqJuqMG4L0AdaeHtoPLndORIPhKGBdwPwU0nIFdA3GmgN9LSVPx/X9In78ZLuaA0/H7OcKnIhJDAN1RxPgaBaEy/OM+USkc2we94vpFeakC7+VosVhM8QAZYRZoqv1m6wAAAABJRU5ErkJggg==" />
   <style>
     :root {
       --color-bg: #0F0F0F;
@@ -112,6 +118,18 @@
       font-weight: 400
     }
 
+    .topbar .brand .ver {
+      font-family: var(--font-mono, ui-monospace, monospace);
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: .04em;
+      color: var(--color-accent);
+      border: 1px solid var(--color-accent);
+      border-radius: 999px;
+      padding: 1px 6px;
+      opacity: .85
+    }
+
     .topbar nav {
       display: inline-flex;
       align-items: center;
@@ -154,116 +172,6 @@
       color: var(--green);
       background: transparent;
       border: 1px solid var(--color-border)
-    }
-
-    .gate {
-      position: fixed;
-      inset: 0;
-      z-index: 50;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      padding: 24px;
-      background: rgba(8, 8, 10, .72);
-      backdrop-filter: blur(6px)
-    }
-
-    .gate.visible {
-      display: flex
-    }
-
-    .gate-card {
-      width: 100%;
-      max-width: 440px;
-      background: var(--color-panel);
-      border: 1px solid var(--color-border);
-      border-radius: 14px;
-      padding: 24px
-    }
-
-    .gate-card h2 {
-      margin: 0 0 8px;
-      font-size: 18px;
-      font-weight: 600
-    }
-
-    .gate-sub {
-      margin: 0 0 18px;
-      font-size: 12px;
-      line-height: 1.5;
-      color: var(--color-text-ter)
-    }
-
-    .gate-field {
-      display: block;
-      margin-bottom: 14px
-    }
-
-    .gate-field>span {
-      display: block;
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: .7px;
-      color: var(--color-text-sec);
-      margin-bottom: 6px
-    }
-
-    .gate-field input {
-      width: 100%;
-      box-sizing: border-box;
-      background: #0a0a0d;
-      border: 1px solid var(--color-border);
-      border-radius: 8px;
-      padding: 10px 12px;
-      color: var(--color-text-pri);
-      font-family: var(--font-mono);
-      font-size: 13px
-    }
-
-    .gate-field input:focus {
-      outline: none;
-      border-color: var(--color-accent)
-    }
-
-    .gate-field a {
-      display: inline-block;
-      margin-top: 6px;
-      font-size: 10px;
-      color: var(--color-accent);
-      text-decoration: none
-    }
-
-    .gate-err {
-      min-height: 16px;
-      font-size: 11px;
-      color: var(--red);
-      margin-bottom: 8px
-    }
-
-    .gate-actions {
-      display: flex;
-      justify-content: flex-end;
-      gap: 10px
-    }
-
-    .gate-btn {
-      font-size: 12px;
-      border-radius: 8px;
-      padding: 9px 16px;
-      cursor: pointer;
-      border: 1px solid var(--color-border)
-    }
-
-    .gate-btn.ghost {
-      background: transparent;
-      color: var(--color-text-sec)
-    }
-
-    .gate-btn.primary {
-      background: var(--color-accent);
-      border-color: var(--color-accent);
-      color: var(--color-bg);
-      font-weight: 600
     }
 
     .badge {
@@ -440,56 +348,79 @@
       animation: pulse 1.4s ease-in-out 2
     }
 
-    .layers {
-      display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 10px;
-      width: 100%;
-      margin-bottom: 14px
+    /* Fixed height, and the note never wraps. The note text differs between
+       states, and letting it reflow moved everything below it on every click. */
+    .vf-row {
+      height: 34px;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
     }
-
-    .layer {
-      background: var(--color-panel);
+    .vf {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+      cursor: pointer;
+      user-select: none;
+    }
+    /* The native checkbox stays as the control (keyboard, focus, :checked) and
+       the pill is drawn from it, so there is no state to keep in sync. */
+    .vf input {
+      appearance: none;
+      -webkit-appearance: none;
+      position: relative;
+      flex: none;
+      width: 46px;
+      height: 26px;
+      margin: 0;
+      border-radius: 13px;
+      background: var(--color-border);
       border: 1px solid var(--color-border);
-      border-radius: 10px;
-      padding: 10px 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      min-height: 62px
+      cursor: pointer;
+      transition: background 140ms ease, border-color 140ms ease;
     }
-
-    .layer .l-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline
+    .vf input::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #F9F9F9;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+      transition: transform 140ms ease;
     }
-
-    .layer .l-name {
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: .7px;
-      color: var(--color-text-ter)
+    .vf input:checked {
+      background: var(--color-accent);
+      border-color: var(--color-accent);
     }
-
-    .layer .l-pill {
-      font-size: 10px;
-      font-family: var(--font-mono);
-      color: var(--color-text-sec)
+    .vf input:checked::after {
+      transform: translateX(20px);
     }
-
-    .layer .l-val {
+    .vf input:focus-visible {
+      outline: 2px solid var(--color-glow);
+      outline-offset: 2px;
+    }
+    .vf-label {
       font-size: 13px;
-      color: var(--color-text-sec);
-      line-height: 1.4
+      font-weight: 600;
+      color: var(--color-text-pri);
     }
-
-    .layer.eager .l-pill {
-      color: var(--green)
+    .vf-note {
+      font-size: 12px;
+      color: var(--color-text-ter);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
-
-    .layer.patient .l-pill {
-      color: var(--orange)
+    .vf.unavailable {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .vf.unavailable input {
+      cursor: not-allowed;
     }
 
     .composite {
@@ -738,7 +669,7 @@
       content: "";
       position: absolute;
       inset: 0;
-      background: linear-gradient(to top, rgba(0, 191, 166, .10) 0 30%, rgba(244, 185, 66, .10) 30% 60%, rgba(226, 140, 124, .10) 60% 100%);
+      background: linear-gradient(to top, rgba(0, 191, 166, .10) 0 30%, rgba(244, 185, 66, .10) 30% 50%, rgba(226, 140, 124, .10) 50% 100%);
       pointer-events: none
     }
 
@@ -795,7 +726,7 @@
     }
 
     .tx:empty::before {
-      content: "–";
+      content: "-";
       color: var(--color-text-ter)
     }
 
@@ -882,8 +813,7 @@
         padding: 24px 14px
       }
 
-      .grid,
-      .layers {
+      .grid {
         grid-template-columns: repeat(2, 1fr)
       }
 
@@ -898,7 +828,7 @@
   <div class="glow"></div>
   <header class="topbar">
     <a class="brand" href="https://ai-coustics.com" target="_blank" rel="noopener">
-      <span class="mark"></span>Tyto<span class="sub">— Audio Insights</span>
+      <span class="mark"></span>Tyto<span class="ver">1.1</span><span class="sub">Audio insight</span>
     </a>
     <nav>
       <a href="https://docs.ai-coustics.com" target="_blank" rel="noopener">Docs</a>
@@ -923,25 +853,18 @@
 
     <div id="banner" class="banner"></div>
 
-    <div class="layers">
-      <div id="layer-aware" class="layer">
-        <div class="l-head"><span class="l-name">1 · Aware</span><span class="l-pill" id="aware-pill">idle</span></div>
-        <div class="l-val" id="aware-val">Agent instructions are refreshed with a live room note.</div>
-      </div>
-      <div id="layer-tuned" class="layer eager">
-        <div class="l-head"><span class="l-name">2 · Tuned</span><span class="l-pill" id="tuned-pill">eager</span></div>
-        <div class="l-val" id="tuned-val">Turn-detection profile based on background activity.</div>
-      </div>
-      <div id="layer-react" class="layer">
-        <div class="l-head"><span class="l-name">3 · Reactive</span><span class="l-pill" id="react-pill">–</span></div>
-        <div class="l-val" id="react-val">Interrupts the agent when one issue dominates.</div>
-      </div>
+    <div class="vf-row">
+      <label class="vf">
+        <input type="checkbox" id="vf-toggle" />
+        <span class="vf-label">Quail Voice Focus 2.2</span>
+        <span class="vf-note" id="vf-note">the agent hears your raw microphone</span>
+      </label>
     </div>
 
     <div class="composite">
       <div class="composite-head">
-        <span class="composite-label"><span class="composite-formula" id="tyto-state">higher = worse</span></span>
-        <span class="composite-val" id="composite-val">–</span>
+        <span class="composite-label"><span class="composite-formula" id="tyto-state">lower is better</span></span>
+        <span class="composite-val" id="composite-val">-</span>
       </div>
       <div class="composite-bar">
         <div class="composite-fill" id="composite-fill"></div>
@@ -949,8 +872,8 @@
       </div>
       <div class="composite-tune">
         <label for="nudge-th">Nudge sensitivity</label>
-        <input type="range" class="nudge-range" id="nudge-th" min="0.35" max="0.60" step="0.01" value="0.50" aria-label="Nudge sensitivity">
-        <span class="nudge-val" id="nudge-th-val">≥ 0.50</span>
+        <input type="range" class="nudge-range" id="nudge-th" min="0.30" max="0.50" step="0.01" value="0.31" aria-label="Nudge sensitivity">
+        <span class="nudge-val" id="nudge-th-val">≥ 0.31</span>
       </div>
     </div>
 
@@ -971,8 +894,8 @@
     <div class="log" id="log"></div>
   </div>
 
-  <audio id="remote" autoplay></audio>
-
+  <!-- The agent's audio element is created by app.js on connect (it owns the
+       track), so there is deliberately no <audio> tag here. -->
   <script type="module" src="/app.js"></script>
 </body>
 
