@@ -10,7 +10,10 @@ Public surface:
     scorer    - LiveTytoScorer: real-time Tyto scoring over the aic-sdk
     provider  - VoiceProvider seam (swap the voice backend behind one interface)
     controller- TytoController: wires scores into the three adaptation layers
+    openai_live - OpenAILiveProvider over the GPT-Live 1 WebSocket API (default)
     openai_realtime - OpenAIRealtimeProvider over the Realtime WebSocket API
+    jev       - JevJudge: TypeSafe Jev as the judge of the Reactive layer
+    backends  - make_provider / make_judge from environment variables
 """
 
 from .audio import SounddeviceSink
@@ -23,16 +26,20 @@ from .decision import (
     room_state_summary,
     strongest_cause,
 )
+from .jev import Decision, JevJudge, Situation
 from .provider import Handlers, VoiceProvider
 from .scorer import LiveTytoScorer
 
 __all__ = [
     "CHECK_AUDIO_QUALITY_TOOL",
+    "Decision",
     "EnvMonitor",
     "Handlers",
+    "JevJudge",
     "LiveTytoScorer",
     "Nudge",
     "Scores",
+    "Situation",
     "SounddeviceSink",
     "TytoController",
     "VoiceProvider",

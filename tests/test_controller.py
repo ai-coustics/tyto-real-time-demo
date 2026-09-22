@@ -114,3 +114,107 @@ def test_audio_quality_snapshot_summarizes_top_issue():
     snap = controller.audio_quality_snapshot()
     assert snap["verdict"] == "degraded"
     assert snap["top_issue"]["key"] == "interfering_speech"
+
+
+# -- the judge (Jev) ---------------------------------------------------------- #
+
+from tyto_voice.jev import ASK_AFTER_SENTENCE, ASK_NOW, STAY_SILENT, Decision  # noqa: E402
+
+
+class FakeJudge:
+    model = "fake-jev"
+
+    def __init__(self):
+        self.asked = []
+        self.busy = False
+
+    def ask(self, situation, callback):
+        self.asked.append((situation, callback))
+        return True
+
+    def answer(self, action, **kw):
+        situation, callback = self.asked[-1]
+        callback(
+            Decision(action=action, confidence=kw.get("confidence", 0.9), reason=action, latency_ms=300, source=kw.get("source", "jev")),
+            situation,
+        )
+
+
+class Clock:
+    t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+    def advance(self, dt):
+        self.t += dt
+
+
+def build_judged():
+    provider, scorer, judge, clock, updates = FakeProvider(), FakeScorer(), FakeJudge(), Clock(), []
+    controller = TytoController(provider, scorer, judge=judge, on_update=updates.append, clock=clock)
+    controller.set_connected(True)
+    return provider, judge, controller, clock, updates
+
+
+def test_judge_is_consulted_and_ask_now_fires_the_nudge():
+    provider, judge, controller, _, _ = build_judged()
+    controller.on_scores(make(risk_score=0.7, interfering_speech=0.8))
+    assert judge.asked and "nudge" not in provider.kinds()  # gate tripped, verdict pending
+    judge.answer(ASK_NOW)
+    assert "interrupt" in provider.kinds() and "nudge" in provider.kinds()
+    assert controller.awaiting_nudge
+
+
+def test_judge_wait_for_sentence_defers_until_the_agent_is_idle():
+    provider, judge, controller, _, _ = build_judged()
+    controller.on_agent_speaking(True)
+    controller.on_scores(make(risk_score=0.7, noise=0.8))
+    assert judge.asked[-1][0].agent_speaking is True
+    judge.answer(ASK_AFTER_SENTENCE)
+    assert "nudge" not in provider.kinds()
+    controller.on_agent_speaking(False)  # sentence over, nothing left to play
+    assert "nudge" in provider.kinds()
+
+
+def test_judge_stay_silent_suppresses_the_nudge_and_reports_the_verdict():
+    provider, judge, controller, _, updates = build_judged()
+    controller.on_scores(make(risk_score=0.7, noise=0.8))
+    judge.answer(STAY_SILENT)
+    assert "nudge" not in provider.kinds()
+    assert any("jev" in u and u["jev"]["action"] == STAY_SILENT and u["jev"]["cause"] == "Noise" for u in updates)
+
+
+def test_judge_fallback_fires_the_rule():
+    provider, judge, controller, _, _ = build_judged()
+    controller.on_scores(make(risk_score=0.7, noise=0.8))
+    judge.answer(ASK_NOW, source="fallback")
+    assert "nudge" in provider.kinds()
+
+
+def test_fresh_verdict_makes_the_trip_instant():
+    provider, judge, controller, clock, _ = build_judged()
+    controller.on_scores(make(risk_score=0.35, noise=0.6))  # warn band: consulted, gate not tripped
+    assert judge.asked and "nudge" not in provider.kinds()
+    judge.answer(ASK_NOW)
+    assert "nudge" not in provider.kinds()
+    clock.advance(1.0)
+    controller.on_scores(make(risk_score=0.7, noise=0.8))  # trips: acts on the cached verdict at once
+    assert "nudge" in provider.kinds()
+
+
+def test_situation_carries_transcript_context_and_ask_history():
+    provider, judge, controller, clock, _ = build_judged()
+    controller.on_agent_transcript("your order number is four seven two nine", True)
+    controller.on_user_transcript("hang on", True)
+    controller.on_scores(make(risk_score=0.7, noise=0.8))
+    s = judge.asked[-1][0]
+    assert s.cause == "noise" and s.severity == "severe" and s.since_ask_s is None and s.times_asked == 0
+    assert "four seven two nine" in s.agent_last_words and s.caller_last_words == "hang on" and s.caller_speaking
+    judge.answer(ASK_NOW)
+    controller.on_agent_speaking(True, nudge=True)
+    controller.on_agent_speaking(False, nudge=True)
+    clock.advance(12.0)
+    controller.on_scores(make(risk_score=0.7, noise=0.8))
+    s2 = judge.asked[-1][0]
+    assert s2.times_asked == 1 and 11 < s2.since_ask_s < 13 and not s2.caller_speaking

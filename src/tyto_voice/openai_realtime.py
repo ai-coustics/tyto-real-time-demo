@@ -68,6 +68,7 @@ class OpenAIRealtimeProvider(VoiceProvider):
         self._audio_done = audio_done
         self._audio_flush = audio_flush
         self._model = model
+        self.model = model  # public, for the UI
         self._voice = voice
         self._transcribe_model = transcribe_model
         self._turn_detection = turn_detection or VAD_PROFILES["eager"]

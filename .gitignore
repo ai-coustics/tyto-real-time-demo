@@ -17,3 +17,6 @@ venv/
 models/
 *.aicmodel
 .gstack/
+
+# Brand webfont (Milling by 205TF, licensed): drop the file in locally, never commit it
+examples/web/assets/fonts/*.woff2

@@ -1,23 +1,25 @@
 """Web demo backend: the full Tyto voice agent, served to a browser.
 
 This is the same demo as the browser reference, but the Python backend is the
-whole brain. It runs Tyto scoring and the three adaptation layers, and holds the
-agent session and your keys (from env vars). The browser is a thin client: it
-captures the mic, plays the agent, and renders the UI.
+whole brain. It runs Tyto scoring and the three adaptation layers, asks Jev how
+to act when a problem trips the gate, and holds the agent session and your keys
+(from env vars). The browser is a thin client: it captures the mic, plays the
+agent, and renders the UI.
 
 Per browser tab, one session:
 
     browser mic (PCM16, 24 kHz)  ── websocket ─>  scorer.feed + provider.send_audio
     agent audio (PCM16)          <─ websocket ──  provider audio_out
-    scores / room / vad / nudge  <─ websocket ──  controller (the three layers)
+    scores / room / vad / nudge / jev  <─ websocket ──  controller (the three layers)
 
 Keys live only here, never in the browser:
-    AIC_SDK_LICENSE   runs Tyto locally on this backend
-    OPENAI_API_KEY    opens the Realtime session from this backend
+    AIC_SDK_LICENSE      runs Tyto locally on this backend
+    OPENAI_API_KEY       opens the GPT-Live 1 session (VOICE_BACKEND=realtime for Realtime)
+    AI_GATEWAY_API_KEY   Jev through Vercel AI Gateway, the judge (optional)
 
 Run:
     uv pip install -e ".[web]"
-    # put AIC_SDK_LICENSE and OPENAI_API_KEY in .env
+    # put the keys in .env (see .env.example)
     uv run examples/web/server.py        # then open http://localhost:8080
 """
 
@@ -30,17 +32,19 @@ from pathlib import Path
 import numpy as np
 from aiohttp import WSMsgType, web
 
-from tyto_voice.controller import CHECK_AUDIO_QUALITY_TOOL, TytoController
-from tyto_voice.decision import NUDGE_THRESHOLD_DEFAULT, VAD_PROFILES
+from tyto_voice.backends import make_judge, make_provider
+from tyto_voice.controller import TytoController
+from tyto_voice.decision import NUDGE_THRESHOLD_DEFAULT
 from tyto_voice.env import load_env
-from tyto_voice.openai_realtime import SAMPLE_RATE, OpenAIRealtimeProvider
-from tyto_voice.prompts import BASE_INSTRUCTIONS
+from tyto_voice.openai_live import SAMPLE_RATE  # both backends stream PCM16 at 24 kHz
 from tyto_voice.provider import Handlers
 from tyto_voice.scorer import LiveTytoScorer
 
 HERE = Path(__file__).parent
 INDEX = HERE / "index.html"
 APP_JS = HERE / "app.js"
+DS_DIR = HERE / "ds"  # ai-coustics design-system tokens (fonts, colors, typography, spacing, base)
+ASSETS_DIR = HERE / "assets"  # logo mark; the licensed Milling webfont goes in assets/fonts, gitignored
 
 
 class Session:
@@ -57,7 +61,8 @@ class Session:
         self.keys = keys
         self.out: asyncio.Queue = asyncio.Queue()
         self.scorer: LiveTytoScorer | None = None
-        self.provider: OpenAIRealtimeProvider | None = None
+        self.provider = None
+        self.judge = None
         self.controller: TytoController | None = None
         self._started = False
 
@@ -84,29 +89,24 @@ class Session:
             return
         self._started = True
 
+        log = lambda k, t: self.send_json({"type": "log", "kind": k, "text": t})  # noqa: E731
         handlers = Handlers()
-        provider = OpenAIRealtimeProvider(
+        provider = make_provider(
             handlers,
             api_key=self.keys["openai"],
-            instructions=BASE_INSTRUCTIONS,
             audio_out=self.send_bytes,  # agent audio -> browser plays it
             audio_done=lambda: self.send_json({"type": "agent_done"}),
             audio_flush=lambda: self.send_json({"type": "flush"}),
-            turn_detection=VAD_PROFILES["eager"],
-            tools=[CHECK_AUDIO_QUALITY_TOOL],
-            on_log=lambda k, t: self.send_json({"type": "log", "kind": k, "text": t}),
+            on_log=log,
         )
+        judge = make_judge(on_log=log)  # None without a gateway key: the rule decides alone
         scorer = LiveTytoScorer(
             self.keys["license"],
             sample_rate=SAMPLE_RATE,
+            models_dir=os.environ.get("AIC_MODELS_DIR", "./models"),  # baked into the image on Modal
             on_state=lambda state, text: self.send_json({"type": "tyto_state", "state": state, "text": text}),
         )
-        controller = TytoController(
-            provider,
-            scorer,
-            on_update=self._on_update,
-            on_log=lambda k, t: self.send_json({"type": "log", "kind": k, "text": t}),
-        )
+        controller = TytoController(provider, scorer, judge=judge, on_update=self._on_update, on_log=log)
         scorer.on_scores = controller.on_scores
 
         handlers.on_ready = controller.on_ready
@@ -117,12 +117,13 @@ class Session:
         handlers.on_agent_transcript = controller.on_agent_transcript
         handlers.on_tool_call = controller.on_tool_call
 
-        self.provider, self.scorer, self.controller = provider, scorer, controller
+        self.provider, self.judge, self.scorer, self.controller = provider, judge, scorer, controller
+        self.send_json({"type": "config", "backend": provider.model, "judge": judge.model if judge else None})
         try:
             scorer.start()  # downloads the model (cached) and checks the license
             provider.connect()
             controller.set_connected(True)
-            self.send_json({"type": "status", "state": "live", "label": "Live"})
+            self.send_json({"type": "status", "state": "live", "label": f"Live · {provider.model}"})
         except Exception as err:  # noqa: BLE001 - surface to the browser
             self.send_json({"type": "tyto_state", "state": "error", "text": str(err)})
             self.send_json({"type": "status", "state": "error", "label": "Error"})
@@ -134,6 +135,8 @@ class Session:
             self.scorer.stop()
         if self.provider:
             self.provider.disconnect()
+        if self.judge:
+            self.judge.close()
 
     # -- inbound from the browser ------------------------------------------- #
 
@@ -168,6 +171,8 @@ class Session:
             self.send_json({"type": "transcript", "who": tx["who"], "text": tx["text"], "final": tx["final"]})
         elif "nudge" in state:
             self.send_json({"type": "nudge", **state["nudge"]})
+        elif "jev" in state:
+            self.send_json({"type": "jev", **state["jev"]})
 
 
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:
@@ -203,6 +208,8 @@ def main() -> None:
     }
     if not keys["license"] or not keys["openai"]:
         raise SystemExit("Set AIC_SDK_LICENSE and OPENAI_API_KEY (see .env.example).")
+    if not (os.environ.get("AI_GATEWAY_API_KEY") or os.environ.get("TYPESAFE_API_KEY")):
+        print("No AI_GATEWAY_API_KEY: Jev is off, the tuned rule nudges on its own.")
 
     app = web.Application()
     app["keys"] = keys
@@ -211,9 +218,12 @@ def main() -> None:
             web.get("/", index_handler),
             web.get("/app.js", app_js_handler),
             web.get("/ws", ws_handler),
+            web.static("/ds", DS_DIR),
+            web.static("/assets", ASSETS_DIR),
         ]
     )
-    host, port = "127.0.0.1", int(os.environ.get("PORT", "8080"))
+    # Loopback by default; a container platform sets HOST=0.0.0.0 so its proxy can reach us.
+    host, port = os.environ.get("HOST", "127.0.0.1"), int(os.environ.get("PORT", "8080"))
     print(f"Tyto web demo on http://{host}:{port}  (Ctrl-C to stop)")
     web.run_app(app, host=host, port=port, print=None)
 

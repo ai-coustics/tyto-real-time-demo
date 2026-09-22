@@ -1,195 +1,145 @@
 // Tyto web demo, browser client.
 //
 // Thin client: capture the mic, stream PCM16 to the Python backend, play the
-// agent audio it streams back, and render the UI from the backend's messages.
-// All scoring, the three adaptation layers, and the keys live on the backend.
-// The metric rendering here mirrors the browser reference (index.html).
+// agent audio it streams back, and render the page from the backend's messages.
+// All scoring, the three adaptation layers, Jev's verdicts, and the keys live on
+// the backend. The look follows the ai-coustics design system (tokens in /ds)
+// and the Audio Insight post-call demo: mono eyebrows, display numerals,
+// hairline cards, thin severity bars.
 
 const $ = (id) => document.getElementById(id);
-const $status = $("status"), $mic = $("mic"), $log = $("log"), $banner = $("banner");
-const $userTx = $("user-tx"), $agentTx = $("agent-tx");
 
 const SAMPLE_RATE = 24000;       // PCM16 mono, matches the backend and OpenAI
 const MIC_CHUNK = 480;           // ~20 ms batches sent to the backend
-const SERIES_HISTORY_MS = 30000;
-const emaAlpha = 0.3;            // sparkline smoothing only
 
-// The six Tyto 1.1 dimensions, in the docs' order (see decision.py).
+// The six Tyto 1.1 dimensions and their thresholds mirror src/tyto_voice/decision.py.
 const ENV_KEYS = ["noise", "speaker_reverb", "speaker_loudness", "interfering_speech", "packet_loss", "codec_degradation"];
-const LABELS = {
-  noise: "Noise", speaker_reverb: "Speaker Reverb", speaker_loudness: "Speaker Loudness",
-  interfering_speech: "Interfering Speech", packet_loss: "Packet Loss", codec_degradation: "Codec Degradation",
+const SHORT = {
+  noise: "Noise", speaker_reverb: "Reverb", speaker_loudness: "Loudness",
+  interfering_speech: "Interf. speech", packet_loss: "Packet loss", codec_degradation: "Codec",
 };
-const ICONS = {
-  noise: '<path d="M2 6c.6.5 1.2 1 2.5 1C7 7 7 5 9.5 5c2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"/><path d="M2 12c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"/><path d="M2 18c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"/>',
-  speaker_reverb: '<circle cx="12" cy="12" r="2"/><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.2 19.1 19.1"/>',
-  speaker_loudness: '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>',
-  interfering_speech: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
-  packet_loss: '<line x1="2" y1="2" x2="22" y2="22"/><path d="M8.5 16.5a5 5 0 0 1 7 0"/><path d="M2 8.82a15 15 0 0 1 4.17-2.65"/><path d="M10.66 5c4.01-.36 8.14.9 11.34 3.76"/><path d="M16.85 11.25a10 10 0 0 1 2.22 1.68"/><path d="M5 13a10 10 0 0 1 5.24-2.76"/><line x1="12" y1="20" x2="12.01" y2="20"/>',
-  codec_degradation: '<polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/>',
+const DESCRIPTIONS = {
+  noise: "Ambient noise behind the speaker, relative to the speaker's level.",
+  speaker_reverb: "Low = dry, near-field audio; high = reverberant, far-field. Informational only.",
+  speaker_loudness: "Loudness level of the main speaker. Informational only.",
+  interfering_speech: "Competing speech behind the main speaker: people nearby, or a TV, radio or phone.",
+  packet_loss: "Audio dropouts or discontinuities: packet loss, jitter, frame erasure, CPU overload.",
+  codec_degradation: "Compression artifacts from the codec carrying the audio.",
 };
-const icon = (k) => ICONS[k] ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[k]}</svg>` : "";
 const NO_POLARITY = new Set(["speaker_loudness", "speaker_reverb"]);
 const THRESHOLDS = {
   noise: [0.20, 0.45], interfering_speech: [0.15, 0.35], packet_loss: [0.05, 0.15],
   codec_degradation: [0.30, 0.50], speaker_reverb: [0.25, 0.55], speaker_loudness: [0.12, 0.25],
 };
-const COMPOSITE_TH = [0.30, 0.50];   // Tyto Risk Score bands from the docs
+const COMPOSITE_TH = [0.30, 0.50];   // Tyto risk bands from the docs
 const NUDGE_TH = { min: 0.30, max: 0.50, default: 0.40 };
-const DESCRIPTIONS = {
-  noise: "Ambient noise behind the speaker, relative to the speaker's level. High = the noise is loud compared to the speaker.",
-  packet_loss: "Audio dropouts or discontinuities: packet loss, jitter, frame erasure, or CPU overload.",
-  interfering_speech: "Competing speech behind the main speaker: people nearby, or a TV, radio or phone playing.",
-  codec_degradation: "Compression artifacts from the codec carrying the audio: low bitrate, narrowband telephony, transcoding.",
-  speaker_loudness: "Loudness level of the main speaker. Informational only.",
-  speaker_reverb: "Low = dry, near-field audio; high = reverberant, far-field audio. Informational only.",
+
+// Traffic light from the secondary palette, as in the post-call demo.
+const TONE = { good: "var(--teal)", warn: "var(--amber)", bad: "var(--clay)", neutral: "var(--gray-60)" };
+const band = (v, th = COMPOSITE_TH) => (v < th[0] ? "good" : v <= th[1] ? "warn" : "bad");
+const dimBand = (k, v) => (NO_POLARITY.has(k) ? "neutral" : band(v, THRESHOLDS[k] || COMPOSITE_TH));
+const fmt = (v) => (v == null || !Number.isFinite(v) ? "–" : v.toFixed(2));
+const ACTION_WORDS = {
+  ask_now: "Cut in now", ask_after_sentence: "Finish the sentence first", adapt_quietly: "Carry on, carefully", stay_silent: "Stay quiet",
 };
 
-// ── UI rendering (mirrors index.html) ─────────────────────────────────────────
-function setStatus(state, label) { $status.className = "badge " + state; $status.innerHTML = `<span class="dot"></span>${label}`; }
+// ── rendering ────────────────────────────────────────────────────────────────
+function setStatus(state, label) {
+  const tone = { live: "positive", connecting: "warning", error: "critical" }[state] || "";
+  $("status").className = "badge " + tone;
+  $("status").innerHTML = `<span class="dot"></span>${label}`;
+}
 function setTytoState(state, text) {
-  const el = $("tyto-state"); if (!el) return;
-  el.className = "composite-formula" + (state ? " ts-" + state : "");
-  el.textContent = text || "higher = worse";
+  const el = $("tyto-state");
+  el.className = "state " + (state || "");
+  el.textContent = text;
 }
-function colorFor(t) {
-  if (t.startsWith("tyto.nudge") || t.startsWith("tool.")) return "t-orange";
-  if (t.startsWith("tyto.aware")) return "t-purple";
-  if (t.startsWith("tyto.vad")) return "t-blue";
-  if (t.includes("transcript")) return "t-blue";
-  if (t === "error" || t === "tyto.error") return "t-red";
-  if (t.startsWith("tyto.")) return "t-green";
-  return "t-gray";
-}
-function log(type, text) {
-  const ts = new Date().toTimeString().slice(0, 8);
-  const e = document.createElement("div"); e.className = "entry";
-  e.innerHTML = `<span class="ts">${ts}</span><span class="type ${colorFor(type)}">${type}</span><span class="preview"></span>`;
-  e.querySelector(".preview").textContent = text || "";
-  $log.appendChild(e); $log.scrollTop = $log.scrollHeight;
-}
-function bucket(key, v) {
-  if (NO_POLARITY.has(key)) return "green";
-  const th = THRESHOLDS[key] || [0.30, 0.50];
-  return v < th[0] ? "green" : v < th[1] ? "yellow" : "red";
-}
-function compositeBucket(v) { return v < COMPOSITE_TH[0] ? "green" : v < COMPOSITE_TH[1] ? "yellow" : "red"; }
-
-const sparkCanvases = new Map();
-function buildCards() {
-  sparkCanvases.clear();
+function buildDims() {
   const grid = $("env-grid"); grid.innerHTML = "";
   for (const k of ENV_KEYS) {
-    const c = document.createElement("div"); c.className = "card"; c.title = DESCRIPTIONS[k] || "";
-    c.innerHTML = `<div class="c-label">${icon(k)}<span>${LABELS[k]}</span></div>` +
-      `<div class="c-bar"><div class="c-fill" id="fill-${k}"></div></div>` +
-      `<div class="c-val" id="val-${k}">–</div>` +
-      `<div class="spark-wrap"><canvas class="spark" id="spark-${k}"></canvas></div>` +
-      `<div class="c-desc">${DESCRIPTIONS[k] || ""}</div>`;
+    const c = document.createElement("div"); c.className = "dim"; c.title = DESCRIPTIONS[k];
+    c.innerHTML = `<div class="dim-label">${SHORT[k]}</div><div class="dim-val" id="val-${k}">–</div>` +
+      `<div class="bar"><div class="bar-fill" id="fill-${k}"></div></div>`;
     grid.appendChild(c);
-    sparkCanvases.set(k, c.querySelector(`#spark-${k}`));
   }
 }
-function renderComposite(c) {
-  if (c == null) return;
-  const fill = $("composite-fill"), val = $("composite-val");
-  fill.style.width = Math.round(Math.min(1, c) * 100) + "%";
-  fill.className = "composite-fill " + compositeBucket(c);
-  val.textContent = c.toFixed(2);
-}
-function renderMetrics(m) {
+function renderDims(m) {
   for (const k of ENV_KEYS) {
-    const v = m[k]; const fill = $(`fill-${k}`), val = $(`val-${k}`);
-    if (v == null || !fill) continue;
-    fill.style.width = Math.round(Math.min(1, v) * 100) + "%";
-    fill.className = "c-fill " + bucket(k, v);
-    val.textContent = v.toFixed(2);
+    const v = m[k]; if (v == null) continue;
+    const color = TONE[dimBand(k, v)];
+    const val = $(`val-${k}`), fill = $(`fill-${k}`);
+    val.textContent = fmt(v);
+    val.style.color = NO_POLARITY.has(k) ? "var(--text-secondary)" : color;
+    fill.style.width = Math.max(2, Math.min(100, v * 100)).toFixed(1) + "%";
+    fill.style.background = color;
   }
 }
-function updateLayerCards(room, vad) {
-  const aware = $("aware-val"), awarePill = $("aware-pill");
-  if (room) { aware.textContent = room; awarePill.textContent = "injected"; }
-  else { aware.textContent = "Room sounds clean, agent has no extra context."; awarePill.textContent = "clean"; }
-  $("tuned-pill").textContent = vad || "eager";
-  $("layer-tuned").classList.toggle("patient", vad === "patient");
-  $("layer-tuned").classList.toggle("eager", vad !== "patient");
-  $("tuned-val").textContent = vad === "patient"
-    ? "Background is noisy → longer pauses, higher VAD threshold."
-    : "Quiet room → eager semantic VAD for snappy turns.";
+function renderRisk(v) {
+  if (v == null) return;
+  const b = band(v);
+  $("risk-val").textContent = fmt(v); $("risk-val").style.color = TONE[b];
+  $("risk-band").textContent = b;
+  $("risk-fill").style.width = Math.max(2, Math.min(100, v * 100)).toFixed(1) + "%";
+  $("risk-fill").style.background = TONE[b];
 }
+function resetRisk() {
+  $("risk-val").textContent = "–"; $("risk-val").style.color = ""; $("risk-band").textContent = "";
+  $("risk-fill").style.width = "2%"; $("risk-fill").style.background = "";
+  for (const k of ENV_KEYS) { $(`val-${k}`).textContent = "–"; $(`val-${k}`).style.color = ""; $(`fill-${k}`).style.width = "2%"; }
+}
+const setAgent = (value, sub) => { $("agent-val").textContent = value; $("agent-sub").textContent = sub || ""; };
+const setJudge = (value, sub) => { $("judge-val").textContent = value; $("judge-sub").textContent = sub || ""; };
 
-// transcripts
-let userFinals = [], userInterim = "", agentFinals = [], agentInterim = "";
-function renderTx() {
-  const draw = (el, f, i) => { el.innerHTML = ""; for (const x of f) { const d = document.createElement("div"); d.className = "line"; d.textContent = x; el.appendChild(d); } if (i) { const d = document.createElement("div"); d.className = "line interim"; d.textContent = i; el.appendChild(d); } el.scrollTop = el.scrollHeight; };
-  draw($userTx, userFinals, userInterim); draw($agentTx, agentFinals, agentInterim);
+// conversation: one list, the user, the agent, and Tyto's interventions
+const convo = { lines: [], interim: { user: "", agent: "" } };
+function lineEl(who, text, cls) {
+  const d = document.createElement("div"); d.className = `line ${who} ${cls || ""}`;
+  const label = who === "user" ? "You" : who === "agent" ? "Agent" : "Tyto";
+  d.innerHTML = `<span class="who">${label}</span><span class="what"></span>`;
+  d.querySelector(".what").textContent = text;
+  return d;
 }
+function addLine(who, text, cls) {
+  if (!text) return;
+  convo.lines.push({ who, text, cls });
+  if (convo.lines.length > 80) convo.lines.shift();
+  renderConvo();
+}
+function renderConvo() {
+  const el = $("conversation"); el.innerHTML = "";
+  for (const l of convo.lines) el.appendChild(lineEl(l.who, l.text, l.cls));
+  for (const who of ["user", "agent"]) if (convo.interim[who]) el.appendChild(lineEl(who, convo.interim[who], "interim"));
+  if (!el.children.length) el.innerHTML = '<div class="empty">The conversation shows up here.</div>';
+  el.scrollTop = el.scrollHeight;
+}
+function clearConvo() { convo.lines = []; convo.interim = { user: "", agent: "" }; renderConvo(); }
 
-// sparklines
-class MetricSeries {
-  constructor(keys) { this.keys = keys; this.points = new Map(); this.emaPrev = new Map(); for (const k of keys) this.points.set(k, []); }
-  push(t, values, alpha) {
-    const a = Math.min(1, Math.max(0, alpha));
-    for (const key of this.keys) {
-      const value = values[key];
-      if (typeof value !== "number" || !Number.isFinite(value)) continue;
-      const prev = this.emaPrev.get(key);
-      const ema = prev === undefined ? value : a * value + (1 - a) * prev;
-      this.emaPrev.set(key, ema);
-      this.points.get(key).push({ t, raw: value, ema });
-    }
-  }
-  prune(now, historyMs) { const cutoff = now - historyMs - 2000; for (const arr of this.points.values()) { let i = 0; while (i < arr.length && arr[i].t < cutoff) i++; if (i > 0) arr.splice(0, i); } }
-  get(key) { return this.points.get(key) || []; }
-  clear() { for (const k of this.keys) this.points.set(k, []); this.emaPrev.clear(); }
+// activity: the backend's event log, one badge per kind
+function toneFor(kind) {
+  if (kind.startsWith("tyto.nudge")) return "warning";
+  if (kind.startsWith("jev.") || kind.startsWith("tool.")) return "accent";
+  if (kind === "error" || kind === "tyto.error") return "critical";
+  return "";
 }
-const metricSeries = new MetricSeries(ENV_KEYS);
-let rafId = null;
-function syncSparkCanvas(canvas) {
-  const dpr = window.devicePixelRatio || 1;
-  const width = Math.max(1, Math.round(canvas.clientWidth * dpr));
-  const height = Math.max(1, Math.round(canvas.clientHeight * dpr));
-  if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
-  return { width, height };
+function log(kind, text) {
+  const $log = $("log");
+  const empty = $log.querySelector(".empty"); if (empty) empty.remove();
+  const ts = new Date().toTimeString().slice(0, 8);
+  const e = document.createElement("div"); e.className = "entry";
+  e.innerHTML = `<span class="ts">${ts}</span><span class="badge sm ${toneFor(kind)}">${kind}</span><span class="msg"></span>`;
+  e.querySelector(".msg").textContent = text || ""; e.querySelector(".msg").title = text || "";
+  $log.appendChild(e);
+  while ($log.children.length > 200) $log.removeChild($log.firstChild);
+  $log.scrollTop = $log.scrollHeight;
 }
-function strokeSeries(ctx, points, pick, width, height, now, color, alpha) {
-  const start = now - SERIES_HISTORY_MS; let started = false;
-  ctx.beginPath();
-  for (const p of points) {
-    const x = ((p.t - start) / SERIES_HISTORY_MS) * width;
-    const y = height - (Math.max(0, Math.min(1, pick(p))) * height);
-    if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
-  }
-  if (!started) return;
-  ctx.strokeStyle = color; ctx.globalAlpha = alpha; ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.stroke(); ctx.globalAlpha = 1;
-}
-function renderSeries() {
-  const now = Date.now();
-  metricSeries.prune(now, SERIES_HISTORY_MS);
-  for (const key of ENV_KEYS) {
-    const canvas = sparkCanvases.get(key); if (!canvas) continue;
-    const { width, height } = syncSparkCanvas(canvas);
-    const ctx = canvas.getContext("2d"); if (!ctx) continue;
-    ctx.clearRect(0, 0, width, height);
-    const points = metricSeries.get(key); if (!points.length) continue;
-    strokeSeries(ctx, points, (p) => p.raw, width, height, now, "#6993FF", 0.95);
-    strokeSeries(ctx, points, (p) => p.ema, width, height, now, "#F9F9F9", 0.85);
-    const latest = points[points.length - 1];
-    const markerY = height - (Math.max(0, Math.min(1, latest.raw)) * height);
-    ctx.fillStyle = bucket(key, latest.raw) === "green" ? "#00BFA6" : bucket(key, latest.raw) === "yellow" ? "#F4B942" : "#E28C7C";
-    ctx.beginPath(); ctx.arc(width - 4, markerY, 2.5, 0, Math.PI * 2); ctx.fill();
-  }
-  rafId = requestAnimationFrame(renderSeries);
-}
-function startSeriesLoop() { if (rafId != null) cancelAnimationFrame(rafId); rafId = requestAnimationFrame(renderSeries); }
-function clearSeries() { metricSeries.clear(); for (const c of sparkCanvases.values()) { const ctx = c.getContext("2d"); if (ctx) ctx.clearRect(0, 0, c.width, c.height); } }
 
 // nudge sensitivity slider (tells the backend)
 function setNudgeThreshold(v) {
   const val = Math.min(NUDGE_TH.max, Math.max(NUDGE_TH.min, v));
   $("nudge-th").value = val.toFixed(2);
   $("nudge-th-val").textContent = `≥ ${val.toFixed(2)}`;
-  $("composite-marker").style.left = (val * 100).toFixed(1) + "%";
+  $("risk-marker").style.left = (val * 100).toFixed(1) + "%";
+  $("risk-sub").textContent = `lower is better · nudge at ≥ ${val.toFixed(2)}`;
   send({ type: "nudge_threshold", value: val });
 }
 
@@ -197,6 +147,7 @@ function setNudgeThreshold(v) {
 let ws = null, connected = false;
 let micCtx = null, micStream = null, tapNode = null, micBuf = [];
 let playCtx = null, playHead = 0, activeSources = 0, agentDone = false, agentPlaying = false;
+let lastRoom = null, lastVad = null, lastJev = null;
 
 function send(obj) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); }
 
@@ -207,7 +158,9 @@ class Tap extends AudioWorkletProcessor{
 registerProcessor("tap",Tap);`;
 
 async function start() {
-  setStatus("connecting", "Connecting…"); buildCards();
+  setStatus("connecting", "Connecting");
+  clearConvo(); resetRisk(); lastRoom = null; lastVad = null; lastJev = null;
+  setAgent("Connecting", "calling the agent"); setJudge("–", "Jev picks the agent's move when audio gets bad");
   try {
     micStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false },
@@ -231,7 +184,8 @@ async function start() {
     tapNode.port.onmessage = (e) => pushMic(e.data);
     src.connect(tapNode);
 
-    connected = true; $mic.classList.add("live");
+    connected = true;
+    $("mic").classList.add("live"); $("mic-label").textContent = "Hang up";
     log("ws.open", "connected to backend");
   } catch (err) {
     setStatus("error", "Error"); log("error", String(err)); stop();
@@ -240,7 +194,8 @@ async function start() {
 
 function stop() {
   if (!connected && !ws) return;
-  connected = false; $mic.classList.remove("live");
+  connected = false;
+  $("mic").classList.remove("live"); $("mic-label").textContent = "Talk to the agent";
   send({ type: "stop" });
   if (ws) { try { ws.close(); } catch {} ws = null; }
   if (tapNode) { try { tapNode.disconnect(); } catch {} tapNode = null; }
@@ -248,9 +203,9 @@ function stop() {
   if (micCtx) { micCtx.close().catch(() => {}); micCtx = null; }
   flushPlayback();
   if (playCtx) { playCtx.close().catch(() => {}); playCtx = null; }
-  clearSeries(); setTytoState(null);
-  userFinals = []; agentFinals = []; userInterim = ""; agentInterim = ""; renderTx();
-  setStatus("", "Disconnected");
+  setTytoState(null, "start to score your mic");
+  setAgent("Idle", "what it does about your audio");
+  setStatus("", "Not connected");
 }
 
 // mic: batch ~20 ms of float32 into PCM16 and send
@@ -293,39 +248,65 @@ function flushPlayback() {
   activeSources = 0; playHead = 0;
 }
 
+// the Agent tile: the latest adaptation, Reactive over Aware over Tuned
+function onLayers(room, vad) {
+  if (vad !== lastVad) {
+    lastVad = vad;
+    if (vad === "patient") setAgent("Waiting longer", "noisy room: it lets you finish before answering");
+    else if (lastRoom !== null) setAgent("Listening", "quiet again");
+  }
+  if (room !== lastRoom) {
+    lastRoom = room;
+    if (room) setAgent("Knows the room", "told: " + room.replace(/^Audio note:\s*/i, "").split(". ")[0]);
+    else setAgent("Listening", "room sounds clean");
+  }
+}
+
 function onMessage(ev) {
   if (ev.data instanceof ArrayBuffer) { playChunk(ev.data); return; }
   const m = JSON.parse(ev.data);
   switch (m.type) {
-    case "status": setStatus(m.state, m.label); break;
+    case "status":
+      setStatus(m.state, m.label);
+      if (m.state === "live") setAgent("Listening", "the agent says hello");
+      break;
+    case "config":
+      $("models-val").textContent = m.backend.startsWith("gpt-live") ? "GPT-Live 1" : m.backend;
+      $("models-sub").textContent = `scored by Tyto 1.1` + (m.judge ? ` · judged by Jev` : "");
+      setJudge(m.judge ? "Ready" : "Rule", m.judge ? "Jev picks the agent's move when audio gets bad" : "no Jev key: a fixed rule asks you to fix it");
+      log("config", `voice ${m.backend}, judge ${m.judge || "off"}`); break;
     case "tyto_state":
-      if (m.state === "loading") setTytoState("loading", "loading Tyto model…");
-      else if (m.state === "warming") setTytoState("warming", m.text || "warming up - keep talking");
-      else if (m.state === "live") setTytoState(null);
+      if (m.state === "loading") setTytoState("warming", "loading Tyto");
+      else if (m.state === "warming") setTytoState("warming", m.text || "warming up, keep talking");
+      else if (m.state === "live") setTytoState(null, "live · lower is better");
       else if (m.state === "error") setTytoState("error", m.text || "Tyto error");
       log(`tyto.${m.state}`, m.text || ""); break;
     case "scores":
-      renderMetrics(m.scores); renderComposite(m.scores.risk_score);
-      metricSeries.push(Date.now(), m.scores, emaAlpha);
-      updateLayerCards(m.room, m.vad); break;
+      renderRisk(m.scores.risk_score); renderDims(m.scores); onLayers(m.room || "", m.vad || "eager"); break;
     case "transcript":
-      if (m.who === "user") { if (m.final) { if (m.text) userFinals.push(m.text); userInterim = ""; } else userInterim += m.text; }
-      else { if (m.final) { if (m.text) agentFinals.push(m.text); agentInterim = ""; } else agentInterim += m.text; }
-      renderTx(); break;
+      if (m.final) { addLine(m.who, m.text); convo.interim[m.who] = ""; }
+      else { convo.interim[m.who] += m.text; renderConvo(); }
+      break;
+    case "jev":
+      lastJev = m;
+      setJudge(ACTION_WORDS[m.action] || m.action,
+        m.source === "fallback" ? `rule fallback: ${m.reason}` : `${m.reason} · ${Math.round((m.confidence || 0) * 100)}% · ${m.latency_ms} ms`);
+      log("jev.decision", `${m.action} p=${(m.confidence || 0).toFixed(2)} ${m.latency_ms} ms: ${m.reason}`); break;
     case "nudge":
-      $("react-pill").textContent = `${m.label} ${m.value.toFixed(2)}`;
-      $("react-val").textContent = `Just nudged: "${m.text}"`;
-      $banner.textContent = `Tyto: ${m.label} = ${m.value.toFixed(2)}, nudging the agent`;
-      $banner.classList.add("visible"); setTimeout(() => $banner.classList.remove("visible"), 6000);
+      setAgent("Asking you to fix it", m.text);
+      addLine("tyto", `${m.label} ${m.value.toFixed(2)}` + (lastJev ? ` · Jev: ${lastJev.source === "fallback" ? "rule" : `${(ACTION_WORDS[lastJev.action] || lastJev.action).toLowerCase()} (${Math.round((lastJev.confidence || 0) * 100)}%)`}` : "") + ` · the agent stops and asks you to fix it`, "action");
+      lastJev = null;
       log("tyto.nudge", m.text); break;
     case "agent_done": agentDone = true; maybeIdle(); break;
     case "flush": flushPlayback(); break;
-    case "log": log(m.kind, m.text); break;
+    case "log":
+      log(m.kind, m.text);
+      if (m.kind === "tyto.input.resumed") setAgent("Listening", "back to the conversation");
+      break;
   }
 }
 
 $("nudge-th").addEventListener("input", (e) => setNudgeThreshold(+e.target.value));
-$mic.addEventListener("click", () => (connected ? stop() : start()));
-buildCards();
+$("mic").addEventListener("click", () => (connected ? stop() : start()));
+buildDims();
 setNudgeThreshold(NUDGE_TH.default);
-startSeriesLoop();

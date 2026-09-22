@@ -12,9 +12,19 @@ This branch is the server-side sibling of the browser reference in
 Tyto scoring contract and the tuned constants are identical to that reference so
 behavior is comparable across stacks.
 
+Two things are new here compared to the browser reference. The voice is
+**GPT-Live 1** (`gpt-live-1`, OpenAI's full-duplex Live API) by default, with
+the Realtime API one env var away. And the Reactive layer has a judge: **Jev**,
+TypeSafe AI's System One model, called through Vercel AI Gateway. Tyto and the
+tuned thresholds still decide *that* the user's audio has a fixable problem; Jev
+decides in about 300 ms *how* the agent should act on it right now (cut in, let
+the agent finish its sentence, adapt quietly, or stay silent because the user
+was just asked). See [How Jev judges the nudge](#how-jev-judges-the-nudge).
+
 Both stacks run **Tyto 1.1** (`tyto-1.1-l-16khz`) on `aic-sdk` 3.x in Python and
-`@ai-coustics/aic-sdk-wasm` 0.23.x in the browser, and talk to OpenAI's
-`gpt-realtime-2.1`. Tyto 1.1 keeps the same 5 s / 16 kHz mono contract as 1.0
+`@ai-coustics/aic-sdk-wasm` 0.23.x in the browser. The browser reference talks
+to OpenAI's `gpt-realtime-2.1`; this branch talks to `gpt-live-1` (or to
+`gpt-realtime-2.1` with `VOICE_BACKEND=realtime`). Tyto 1.1 keeps the same 5 s / 16 kHz mono contract as 1.0
 while being much smaller and faster, and it changes the metrics: the old
 background-media dimension is folded into `interfering_speech` (competing speech
 from anything, live or a device), `codec_degradation` is new, and the risk-score
@@ -27,12 +37,15 @@ Three things you can run:
 
 | Demo | What it shows | Needs |
 | --- | --- | --- |
-| [examples/web/server.py](examples/web/server.py) | The full demo with the browser UI, same as the reference. Tyto scoring, the agent, and the keys all run on the Python backend; the browser is a thin client. | ai-coustics key + OpenAI key |
+| [examples/web/server.py](examples/web/server.py) | The full demo with the browser UI, same as the reference. Tyto scoring, the agent, Jev, and the keys all run on the Python backend; the browser is a thin client. | ai-coustics key + OpenAI key (+ Vercel AI Gateway key for Jev) |
 | [examples/score_mic.py](examples/score_mic.py) | Live Tyto scoring of your mic in the terminal, with the three layer decisions printed. No agent. | ai-coustics key + a mic |
-| [examples/voice_agent.py](examples/voice_agent.py) | The full agent in the terminal (no UI), for headless or scripting use. | ai-coustics key + OpenAI key + headphones |
+| [examples/voice_agent.py](examples/voice_agent.py) | The full agent in the terminal (no UI), for headless or scripting use. | ai-coustics key + OpenAI key (+ gateway key) + headphones |
 
-The web demo is the one to start with: it is the visual UI from the browser
-reference, but every key stays on the server and Tyto runs in Python.
+The web demo is the one to start with. Its page follows the ai-coustics design
+system and the look of the Audio Insight post-call demo (tokens in
+[examples/web/ds](examples/web/ds)): the risk score, what the agent is doing
+about the room, Jev's verdict, the six dimensions, the conversation, and an
+activity feed. Every key stays on the server and Tyto runs in Python.
 
 The reusable library lives in [src/tyto_voice](src/tyto_voice). It is small and
 split by job, mirroring the commented sections of the browser reference:
@@ -49,9 +62,18 @@ split by job, mirroring the commented sections of the browser reference:
 - `controller.py` - `TytoController`, the provider-agnostic glue that turns a
   score stream into the three adaptations and answers the `check_audio_quality`
   tool.
+- `openai_live.py` - `OpenAILiveProvider`, the GPT-Live 1 WebSocket backend and
+  the default. GPT-Live is full duplex, streams one continuous audio track
+  (silence included) and has no cancel event, so the module docstring explains
+  how each seam command maps onto it. Audio playback is delegated to a sink so
+  the same provider drives a local speaker or a browser.
 - `openai_realtime.py` - `OpenAIRealtimeProvider`, the OpenAI Realtime WebSocket
-  backend. Audio playback is delegated to a sink so the same provider drives a
-  local speaker or a browser.
+  backend (`VOICE_BACKEND=realtime`).
+- `jev.py` - `JevJudge` and the `Situation` / `Decision` contract. Tyto's gate
+  decides *that*, Jev decides *how*. The state Jev sees is bucketed words, the
+  combination policy is code, and any failure degrades to the tuned rule.
+- `backends.py` - `make_provider` / `make_judge` from environment variables,
+  shared by the web and terminal entry points.
 - `audio.py` - `SounddeviceSink`, local speaker playback for the terminal agent.
 
 ## Run it
@@ -63,7 +85,7 @@ into `./models`. Put your keys in a `.env`; everything loads it automatically.
 
 ```bash
 uv venv
-cp .env.example .env    # then edit AIC_SDK_LICENSE and OPENAI_API_KEY
+cp .env.example .env    # then edit AIC_SDK_LICENSE, OPENAI_API_KEY, AI_GATEWAY_API_KEY
 
 # the full demo with the browser UI (start here)
 uv pip install -e ".[web]"
@@ -90,9 +112,14 @@ keys: here the visitor's browser never sees a key.
 
 - `AIC_SDK_LICENSE` runs the Tyto analyzer on the backend. Audio is scored on the
   server; nothing leaves it for scoring.
-- `OPENAI_API_KEY` opens the OpenAI Realtime WebSocket connection from the
+- `OPENAI_API_KEY` opens the GPT-Live (or Realtime) WebSocket connection from the
   backend. The browser only exchanges mic and agent audio with your server, never
   with OpenAI, so no key (or ephemeral secret) is ever sent to the browser.
+- `AI_GATEWAY_API_KEY` calls Jev through Vercel AI Gateway
+  (`https://ai-gateway.vercel.sh/typesafe`, model `typesafe-ai/jev`), billed to
+  your gateway account. Only a few bucketed words about the situation leave the
+  server, never audio or raw scores. Optional: without it the tuned rule nudges
+  on its own. A `TYPESAFE_API_KEY` works too, direct to TypeSafe.
 
 All entry points auto-load a `.env` from the project root (see
 [.env.example](.env.example)); exported environment variables override it.
@@ -103,19 +130,52 @@ All three, server-side, with the same tuned thresholds as the browser:
 
 1. **Aware** - a one-sentence room note is swapped into the agent instructions
    via `session.update` whenever the dominant cause changes. Fully supported.
-2. **Tuned** - turn-taking switches between an eager `semantic_vad` profile and a
-   patient `server_vad` profile (longer end-of-speech, higher threshold) when the
-   room is noisy. Fully supported: OpenAI Realtime exposes `turn_detection`
-   directly, so the same profiles as the browser apply.
+2. **Tuned** - turn-taking switches between an eager and a patient profile when
+   the room is noisy. On Realtime these are real `turn_detection` settings
+   (`semantic_vad` vs `server_vad` with longer end-of-speech and a higher
+   threshold), the same as the browser. GPT-Live owns turn-taking itself and
+   exposes no VAD knobs, so there the swap becomes one appended turn-taking
+   instruction (wait for a clear pause, ignore faint background voices). That is
+   a prompt-level adaptation and the UI labels it as such.
 3. **Reactive** - when the smoothed risk crosses the threshold and one cause the
-   user can act on dominates, the agent interrupts itself with a single spoken
-   nudge, then resumes. Fully supported via `response.cancel` plus a one-shot
-   `response.create`. `codec_degradation` is deliberately excluded here: it is a
-   transport problem, so it only feeds the Aware note (confirm names and
+   user can act on dominates, the agent stops and speaks a single nudge, then
+   resumes. On Realtime that is `response.cancel` plus a one-shot
+   `response.create`. On GPT-Live there is no cancel event and the model finishes
+   its sentence before it speaks an injected line (measured: 3 to 4 s), so the
+   provider flushes the playback buffer and holds the model's audio back until it
+   pauses and starts the nudge. The listener hears the agent stop at once and the
+   nudge from its first word. `codec_degradation` is deliberately excluded here:
+   it is a transport problem, so it only feeds the Aware note (confirm names and
    numbers) instead of asking the user to fix their room.
 
-The `check_audio_quality` tool is wired as an OpenAI function tool, so the user
-can ask "how do I sound?" at any time.
+The `check_audio_quality` tool is wired as an OpenAI function tool on Realtime
+and as client delegation on GPT-Live (the model delegates "how do I sound?" to
+the backend, which answers with the live Tyto reading), so the user can ask at
+any time.
+
+### How Jev judges the nudge
+
+Layer 3 has two stages when a gateway key is present:
+
+1. **Tyto trips the gate.** Same rule as before, in Python: smoothed risk at or
+   above the slider threshold and one actionable cause dominating.
+2. **Jev judges how to act.** From the moment a cause shows up in the warn band
+   the controller asks Jev, about once a second, one request with three atomic
+   questions: a Choice over the allowed actions, and two Nouls (is the user's
+   last line them already dealing with it, is the agent mid-number). The state
+   is a handful of named buckets (cause, "severe", "about 10 seconds", "getting
+   worse", who is speaking, last words, "asked about this: never"), never raw
+   scores, because Jev reads numbers poorly. Python combines the answers: low
+   confidence falls back to the rule, a user already fixing it means stay silent,
+   an agent mid-detail means wait for the sentence. By the time the gate trips a
+   fresh verdict is usually already cached, so the nudge fires with no added
+   wait; otherwise it fires when the in-flight answer lands (~300 ms warm).
+
+Actions: `ask_now` cuts in and nudges; `ask_after_sentence` nudges as soon as the
+agent falls silent (at most 6 s later); `adapt_quietly` and `stay_silent` leave
+the Aware note to do the work and hold the gate for 4 s. Every verdict, its
+confidence, latency and reason land in the event log, and the nudge banner
+names the verdict that fired it. A Jev timeout or error is logged as a fallback and the rule fires as before.
 
 ### Limitations and notes
 
@@ -128,12 +188,44 @@ can ask "how do I sound?" at any time.
   Tyto is fed the same 24 kHz frames and resamples internally to its 16 kHz rate.
   The extra hop adds a little latency in exchange for keeping all logic and keys
   on the server.
-- **Verification.** The decision layer and controller state machine are covered
-  by unit tests (`pytest`), the aic-sdk calls are verified against the installed
-  package (Tyto 1.1 download, config and block size, and the `AnalysisResult`
-  field names the `Scores` contract mirrors), and the web server boot plus
-  websocket session bridge are smoke tested. The live audio path needs your own
-  keys, a mic, and a browser to exercise.
+- **GPT-Live specifics.** The output track is continuous, so "the agent is
+  speaking" is read off the audio (RMS gate, 0.5 s hangover) and only voiced
+  stretches reach the browser. Transcripts arrive as timed fragments about a
+  second behind the audio, with no final marker; lines are cut on punctuation or
+  after 1.2 s of silence. Instructions are immutable after start, so the Aware
+  note and the Tuned profile are appended (`session.instructions.append`) rather
+  than replaced. Scoring pauses while the agent speaks (an invariant shared with
+  the browser), so a trip usually lands while the agent is quiet and the nudge
+  is spoken right away; the interrupt hold covers the case where the agent has
+  just started talking.
+- **Jev reachability.** The decision path needs the gateway, so the demo warms
+  the connection at session start and caps each request at 1.5 s. If Jev is slow
+  or down the rule fires unchanged and the event log says `jev.fallback`.
+- **Verification.** The decision layer, the controller state machine with and
+  without the judge, the Jev contract (state shape, option masking, parsing,
+  policy, timeout fallback) and the GPT-Live event mapping (strict session
+  start, speech segmentation, the interrupt hold, appends, delegation) are
+  covered by unit tests (`pytest`, no network). The GPT-Live events and the Jev
+  gateway request/response were verified against the live APIs on 2026-09-22.
+  The live audio path needs your own keys, a mic, and a browser to exercise.
+
+## Deploy to Modal
+
+The web demo runs on Modal as a `web_server` function (aiohttp is not ASGI, and
+Modal proxies the websocket to a plain port). The Tyto model is baked into the
+image; keys come from a Modal secret in the `tyto-demo` environment.
+
+```bash
+uv tool install modal && modal setup           # once
+modal secret create tyto-demo-live-keys \
+    AIC_SDK_LICENSE=... OPENAI_API_KEY=... AI_GATEWAY_API_KEY=... -e tyto-demo
+modal deploy deploy/modal_app.py -e tyto-demo   # https://ai-coustics-tyto-demo--tyto-demo.modal.run/
+```
+
+Deploying to the `tyto-demo` app name replaces whatever version lived there
+(the URL is pinned by label, so bookmarks survive); `modal app rollback
+tyto-demo -e tyto-demo` brings the previous version back. See
+[deploy/modal_app.py](deploy/modal_app.py) for sizing and the reasoning.
 
 ## Deploy story
 
@@ -163,3 +255,6 @@ you extend this (it doubles as context for AI coding assistants).
 - ai-coustics: <https://ai-coustics.com>
 - Get an SDK key: <https://developers.ai-coustics.com>
 - Python SDK: <https://github.com/ai-coustics/aic-sdk-py>
+- GPT-Live: <https://developers.openai.com/api/docs/guides/live>
+- Jev / TypeSafe: <https://docs.typesafe.ai>, on Vercel AI Gateway:
+  <https://vercel.com/docs/ai-gateway/sdks-and-apis/typesafe>

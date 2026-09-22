@@ -13,6 +13,11 @@ Reactive). The canonical browser reference is [index.html](index.html); this
 branch reproduces the same behavior server-side in Python. Keep the two
 comparable.
 
+The voice is **GPT-Live 1** (`gpt-live-1`, full duplex) by default, Realtime
+(`gpt-realtime-2.1`) with `VOICE_BACKEND=realtime`. The Reactive layer has a
+judge, **Jev** (TypeSafe AI System One) via Vercel AI Gateway: Tyto's rule
+decides *that* there is a fixable problem, Jev decides *how* to act on it.
+
 Tyto returns, per fixed 5 second window: a **risk_score** (0..1, higher is
 worse) and six dimensions (`noise`, `speaker_reverb`, `speaker_loudness`,
 `interfering_speech`, `packet_loss`, `codec_degradation`).
@@ -28,15 +33,20 @@ bands moved to <0.30 good / 0.30-0.50 warn / >0.50 bad.
 
 ```
  mic ──> LiveTytoScorer.feed() ──(aic-sdk Collector)──┐
-                                                       │ every ~2s
+                                                       │ every ~1s
                                           Analyzer.analyze_buffered()
                                                        │  (smoothed, EMA 0.3)
                                                        v
  mic ──> provider.send_audio() ──> agent      TytoController.on_scores()
-            (OpenAI Realtime)                          │
+         (GPT-Live 1 | Realtime)                       │
                 ^   │ events                           ├─ Layer 1 Aware:    set_instructions(BASE + room note)
                 │   v                                  ├─ Layer 2 Tuned:    set_turn_detection(eager | patient)
-            VoiceProvider <───── commands ────────────-┴─ Layer 3 Reactive: interrupt() + nudge()
+            VoiceProvider <───── commands ────────────-┴─ Layer 3 Reactive: EnvMonitor gate ─> JevJudge.ask()
+                                                                              (Tyto: that)      (Jev: how, ~300 ms)
+                                                                                                  │ ask_now / ask_after_sentence /
+                                                                                                  │ adapt_quietly / stay_silent
+                                                                                                  v
+                                                                                       interrupt() + nudge(), deferred, or held
 ```
 
 - **scorer.py** owns the SDK analyzer and the audio buffering. It does not own
@@ -45,10 +55,15 @@ bands moved to <0.30 good / 0.30-0.50 warn / >0.50 bad.
   mute/nudge state machine. It runs on two threads (scores arrive on the scorer
   thread, provider events on the transport thread), guarded by one re-entrant
   lock.
-- **provider.py** is the seam. **openai_realtime.py** is the only file that
-  knows about a specific backend. Audio playback is delegated to callbacks
-  (`audio_out` / `audio_done` / `audio_flush`), so the same provider drives a
-  local speaker or a browser.
+- **provider.py** is the seam. **openai_live.py** (GPT-Live 1, default) and
+  **openai_realtime.py** are the only files that know about a specific backend.
+  Audio playback is delegated to callbacks (`audio_out` / `audio_done` /
+  `audio_flush`), so the same provider drives a local speaker or a browser.
+- **jev.py** is the judge: `Situation` in (bucketed words), `Decision` out, one
+  request in flight, worker-thread callback, fallback to the rule on any error.
+  `build_state` / `build_questions` / `apply_policy` are pure and unit tested.
+- **backends.py** builds the provider and the judge from env vars for both
+  entry points.
 - **audio.py** is `SounddeviceSink`, the local-speaker player for the terminal
   agent. It also owns the "is the agent audible" signal (`on_agent_audio`).
 - **decision.py** is the pure scoring contract and decision functions, shared
@@ -59,11 +74,17 @@ bands moved to <0.30 good / 0.30-0.50 warn / >0.50 bad.
 - **examples/score_mic.py** - terminal mic scorer (no agent).
 - **examples/voice_agent.py** - terminal agent; uses `SounddeviceSink`.
 - **examples/web/** - the browser UI. `server.py` (aiohttp) is the whole brain
-  per tab; the browser is a thin client. `index.html` is generated from the root
-  reference (CSS + markup reused, BYOK gate removed); `app.js` is the transport
-  (mic capture, agent playback, render). Audio is relayed browser <-> backend
-  <-> OpenAI; keys stay in the server env. The player (browser) owns
-  `on_agent_audio`, reported back over the socket.
+  per tab; the browser is a thin client. `index.html` follows the ai-coustics
+  design system (token CSS copied verbatim into `ds/`, served at `/ds`; the
+  licensed Milling webfont is gitignored under `assets/fonts/` and the page
+  falls back to Hanken Grotesk) and mirrors the Audio Insight post-call demo:
+  top bar with the docs links, hero, four stat tiles (risk score, agent, decision,
+  voice agent), six-dimension row, conversation, activity feed. `app.js` is the transport (mic capture,
+  agent playback) plus the render. Audio is relayed browser <-> backend <->
+  OpenAI; keys stay in the server env. The player (browser) owns
+  `on_agent_audio`, reported back over the socket. The three layers have no
+  boxes of their own: they surface as the Agent tile, Tyto lines in the
+  conversation, and activity entries.
 
 ### Who owns "agent audible" (on_agent_audio)
 
@@ -91,6 +112,9 @@ pipeline, etc., write one subclass of `VoiceProvider` (see
 
 If a backend cannot support a layer (for example it manages turn-taking itself),
 do not fake it. Implement what you can and document the gap in the README.
+`openai_live.py` is the worked example of a hard case: no cancel event, no VAD
+knobs, immutable instructions, a continuous audio track. Read its docstring
+before adding another full-duplex backend.
 
 ## Invariants to preserve
 
@@ -113,6 +137,21 @@ casually.
   is never spoken at the user.
 - **`speaker_loudness` and `speaker_reverb` are informational only.** Never
   colored as a problem, never named as a cause, never the reason for a nudge.
+- **Jev judges, it never gates.** The `EnvMonitor` gate (threshold + dominant
+  actionable cause) stays in Python and is what makes a nudge possible at all.
+  Jev only picks between `ask_now`, `ask_after_sentence`, `adapt_quietly` and
+  `stay_silent`, and the combination policy (`jev.apply_policy`) is code. Any
+  Jev failure or low confidence falls back to the rule (ask now), never to
+  silence.
+- **Jev sees words, not numbers.** `build_state` sends buckets ("severe",
+  "about 10 seconds", "never"), the two transcript tails and who is speaking.
+  No scores, thresholds or audio ever go to the gateway. The unit test
+  `test_state_is_named_buckets_without_raw_numbers` enforces this.
+- **GPT-Live: the listener's stop is instant, the model's is not.** On an
+  interrupt the provider flushes playback and holds (drops) the model's output
+  until a ≥0.45 s pause followed by speech, a nudge keyword in the transcript,
+  or a 6 s cap. Do not "fix" this by trusting the model to stop: measured live,
+  it finishes its sentence (3 to 4 s) before it speaks a commentary.
 
 ## aic-sdk quick reference (verified against aic-sdk 3.1.0, core 0.23.0)
 
@@ -145,11 +184,56 @@ for offline batch scoring, but it is intentionally not part of this demo.)
 `AnalysisResult` field names are confirmed against the installed package; only
 the licensed analysis steps need a real key.
 
-## OpenAI Realtime event mapping (WebSocket, server-side)
+## GPT-Live 1 event mapping (WebSocket, server-side, default)
 
-Model: `gpt-realtime-2.1` (both stacks). Input transcription stays on
-`gpt-4o-mini-transcribe`; `gpt-live-transcribe` is the newer option if you want
-it.
+Model `gpt-live-1` at `wss://api.openai.com/v1/live/sessions`, `Authorization:
+Bearer`. Verified live on 2026-09-22 (two sessions, 26 s, $0.02):
+
+| Concept | Outgoing / incoming |
+| --- | --- |
+| configure session | `session.start` with `session: {model, instructions, audio: {format: {type: audio/pcm, rate: 24000}, output: {voice}}, delegation: {type: client}}`. Strict: unknown fields are rejected; `model`, `instructions`, `audio` are immutable after start |
+| ready | `session.started` |
+| send mic | `session.input_audio.append` (base64 PCM16, 24 kHz). Muted = send zeros, keep the track continuous |
+| agent audio | `session.output_audio.delta` (`delta` only, no timing fields on OpenAI's endpoint). Continuous, ~100 ms chunks, silence included: gate by RMS (speech > 0.01, silence < 0.001) |
+| agent text | `session.output_transcript.delta` (`delta`, `start_ms`, `end_ms`), ~1 s behind the audio, no final marker |
+| user text | `session.input_transcript.delta` |
+| Aware / Tuned | `session.instructions.append` `{content, delegation_id: null}` (≤500 tokens). Does not make the model speak |
+| open the call | `session.thinking.append` (quiet context). Made it speak in 1.2 s. `instructions.append` did not within 5 s |
+| nudge | `session.commentary.append` (content to say aloud). Spoken at once when idle; when talking the model finishes its sentence first (3 to 4 s), hence the hold in `interrupt()` |
+| interrupt | none in the API. Flush playback + hold output (see invariants) |
+| tool call | `session.delegation.created` (`delegation.id`, `target: client`) -> answer with `session.commentary.append` carrying that `delegation_id` |
+| usage / end | `session.usage.updated` (~1/min), `session.close` -> `session.closed` (final `usage.seconds`), `error` |
+
+Prompting guides: <https://developers.openai.com/api/docs/guides/live>,
+`.../live-prompting`, `.../live-delegation`; full event reference (Foundry
+mirror): <https://learn.microsoft.com/azure/foundry/openai/gpt-live-reference>.
+
+## Jev quick reference (verified against the gateway 2026-09-22)
+
+```
+POST https://ai-gateway.vercel.sh/typesafe/v1/systemone
+Authorization: Bearer $AI_GATEWAY_API_KEY
+{"model": "typesafe-ai/jev", "state": <str|object|array>,
+ "questions": {"id": {"type": "choice", "instructions": "...", "criteria": {"opt": "meaning", ...}},
+               "id2": {"type": "noul", "instructions": "..."},
+               "id3": {"type": "score", "instructions": "...", "criteria": ["level 0", ..., "level n"]}}}
+-> {"model": ..., "answers": {"id": {"type": "choice", "choice": "opt", "probabilities": {...}, "confidence": 0..1},
+                              "id2": {"type": "noul", "noul": 0..1}, ...}, "usage": {...}, "provider_metadata": {...}}
+GET  https://ai-gateway.vercel.sh/typesafe/v1/models      (also the connection warm-up)
+```
+
+Latency from Berlin through the gateway: 800 ms cold, ~300 ms warm (p50 298 ms
+over 4 calls, one keep-alive client). Confidence for n options is
+`(n * p_max - 1) / (n - 1)`. Known jagged edges of jev-1.13 that shaped the
+design: unreliable with numbers, thresholds and durations, weaker with long
+irrelevant state and double negatives. Docs: <https://docs.typesafe.ai>,
+<https://docs.typesafe.ai/model-jaggedness/jev-1.13>.
+
+## OpenAI Realtime event mapping (WebSocket, `VOICE_BACKEND=realtime`)
+
+Model: `gpt-realtime-2.1` (the browser reference uses the same). Input
+transcription stays on `gpt-4o-mini-transcribe`; `gpt-live-transcribe` is the
+newer option if you want it.
 
 | Concept | Outgoing / incoming |
 | --- | --- |
@@ -166,11 +250,23 @@ it.
 
 ```bash
 uv pip install -e ".[dev]"
-uv run pytest -q                 # 34 tests: decision layer + controller + scorer
+uv run pytest -q                 # 68 tests: decision, controller (+judge), scorer, jev, gpt-live
 ```
 
-The unit tests need no SDK, key, or hardware. The end-to-end audio path needs an
-ai-coustics key, an OpenAI key, a mic, and headphones.
+The unit tests need no SDK, key, network or hardware (Jev is tested through an
+httpx mock transport, GPT-Live through a captured send and a fake clock). The
+end-to-end audio path needs an ai-coustics key, an OpenAI key, a gateway key, a
+mic, and headphones.
+
+## Deploy
+
+`deploy/modal_app.py` ships the web demo to Modal: app `tyto-demo` in
+environment `tyto-demo`, URL label pinned to `tyto-demo`, secret
+`tyto-demo-live-keys` (AIC_SDK_LICENSE, OPENAI_API_KEY, AI_GATEWAY_API_KEY),
+Tyto model baked into the image at `/models`. The server honours `HOST`,
+`PORT` and `AIC_MODELS_DIR` for that. Deploy with `-e tyto-demo` or the app
+lands in the profile's default environment. Roll back with
+`modal app rollback tyto-demo -e tyto-demo`.
 
 ## Conventions
 
