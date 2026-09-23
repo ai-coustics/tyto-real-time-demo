@@ -40,14 +40,18 @@ const band = (v, th = COMPOSITE_TH) => (v < th[0] ? "good" : v <= th[1] ? "warn"
 const dimBand = (k, v) => (NO_POLARITY.has(k) ? "neutral" : band(v, THRESHOLDS[k] || COMPOSITE_TH));
 const fmt = (v) => (v == null || !Number.isFinite(v) ? "–" : v.toFixed(2));
 const ACTION_WORDS = {
-  ask_now: "Cut in now", ask_after_sentence: "Finish the sentence first", adapt_quietly: "Carry on, carefully", stay_silent: "Stay quiet",
+  ask_now: "Cut in now", ask_after_sentence: "After this sentence", adapt_quietly: "Carry on, carefully", stay_silent: "Stay quiet",
 };
 
 // ── rendering ────────────────────────────────────────────────────────────────
 function setStatus(state, label) {
   const tone = { live: "positive", connecting: "warning", error: "critical" }[state] || "";
-  $("status").className = "badge " + tone;
-  $("status").innerHTML = `<span class="dot"></span>${label}`;
+  const [main, ...detail] = String(label).split(" · ");   // "Live · gpt-live-1": phones show only "Live"
+  const el = $("status");
+  el.className = "badge " + tone; el.title = label;
+  el.innerHTML = '<span class="dot"></span><span class="label"></span><span class="detail"></span>';
+  el.querySelector(".label").textContent = main;
+  el.querySelector(".detail").textContent = detail.length ? " · " + detail.join(" · ") : "";
 }
 function setTytoState(state, text) {
   const el = $("tyto-state");
@@ -100,9 +104,10 @@ function lineEl(who, text, cls) {
   return d;
 }
 function addLine(who, text, cls) {
-  if (!text) return;
-  convo.lines.push({ who, text, cls });
-  if (convo.lines.length > 80) convo.lines.shift();
+  if (text) {
+    convo.lines.push({ who, text, cls });
+    if (convo.lines.length > 80) convo.lines.shift();
+  }
   renderConvo();
 }
 function renderConvo() {
@@ -284,7 +289,9 @@ function onMessage(ev) {
     case "scores":
       renderRisk(m.scores.risk_score); renderDims(m.scores); onLayers(m.room || "", m.vad || "eager"); break;
     case "transcript":
-      if (m.final) { addLine(m.who, m.text); convo.interim[m.who] = ""; }
+      // Clear the grey in-progress copy before drawing the finished line, or both stay on
+      // screen until the next word arrives.
+      if (m.final) { convo.interim[m.who] = ""; addLine(m.who, m.text); }
       else { convo.interim[m.who] += m.text; renderConvo(); }
       break;
     case "jev":

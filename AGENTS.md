@@ -84,7 +84,10 @@ bands moved to <0.30 good / 0.30-0.50 warn / >0.50 bad.
   OpenAI; keys stay in the server env. The player (browser) owns
   `on_agent_audio`, reported back over the socket. The three layers have no
   boxes of their own: they surface as the Agent tile, Tyto lines in the
-  conversation, and activity entries.
+  conversation, and activity entries. The page is responsive down to
+  320 px; check phone widths with real device emulation (CDP
+  `Emulation.setDeviceMetricsOverride`), since headless Chrome windows
+  cannot go below 500 px.
 
 ### Who owns "agent audible" (on_agent_audio)
 
@@ -266,7 +269,9 @@ environment `tyto-demo`, URL label pinned to `tyto-demo`, secret
 Tyto model baked into the image at `/models`. The server honours `HOST`,
 `PORT` and `AIC_MODELS_DIR` for that. Deploy with `-e tyto-demo` or the app
 lands in the profile's default environment. Roll back with
-`modal app rollback tyto-demo -e tyto-demo`.
+`modal app rollback tyto-demo -e tyto-demo`. For up to a minute after a
+deploy the old container still answers some requests, so wait for several
+consecutive new responses before checking the live page.
 
 ## Conventions
 
