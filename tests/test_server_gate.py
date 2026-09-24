@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("aiohttp")
 sys.path.insert(0, str(Path(__file__).parent.parent / "examples" / "web"))
-from server import SessionGate, client_ip, origin_allowed  # noqa: E402
+from server import SessionGate, Settings, client_ip, origin_allowed  # noqa: E402
 
 
 def make(**kw):
@@ -97,3 +97,14 @@ def test_websocket_origin_allowlist_overrides_same_host():
     allowed = frozenset({"https://site.example"})
     assert origin_allowed(FakeRequest("1.1.1.1", {"Origin": "https://site.example/"}), allowed=allowed)
     assert not origin_allowed(FakeRequest("1.1.1.1", {"Origin": "https://demo.example"}), allowed=allowed)
+
+
+def test_settings_are_read_when_built_not_at_import(monkeypatch):
+    # main() builds Settings after load_env(), so values that only live in .env apply.
+    monkeypatch.setenv("MAX_SESSIONS", "3")
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://site.example/, https://b.example")
+    monkeypatch.setenv("TRUSTED_PROXIES", "10.0.0.0/8")
+    s = Settings.from_env()
+    assert s.max_sessions == 3 and s.max_session_seconds == 300.0
+    assert s.allowed_origins == {"https://site.example", "https://b.example"}
+    assert client_ip(FakeRequest("10.1.2.3", {"X-Forwarded-For": "8.8.8.8"}), s.trusted_proxies) == "8.8.8.8"

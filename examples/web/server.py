@@ -30,6 +30,7 @@ import ipaddress
 import os
 import time
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -55,18 +56,41 @@ ASSETS_DIR = HERE / "assets"  # logo mark; the licensed Milling webfont goes in 
 # Per process: on Modal that is per container. Per-visitor limits need a real
 # client address; Modal's web_server proxy sends none (every request arrives from
 # its internal 172.x hop), so there only the global limits apply.
-MAX_SESSIONS = int(os.environ.get("MAX_SESSIONS", "8"))
-MAX_SESSION_SECONDS = float(os.environ.get("MAX_SESSION_SECONDS", "300"))
-MAX_STARTS_PER_HOUR = int(os.environ.get("MAX_STARTS_PER_HOUR", "60"))
-MAX_PER_IP = int(os.environ.get("MAX_SESSIONS_PER_IP", "2"))  # at the same time
-MAX_STARTS_PER_IP_HOUR = int(os.environ.get("MAX_STARTS_PER_IP_HOUR", "12"))
-# X-Forwarded-For is client-controlled, so it is only read when the direct peer is
-# one of these proxies (comma-separated IPs or CIDRs). Empty = never trusted.
-TRUSTED_PROXIES = tuple(
-    ipaddress.ip_network(p.strip(), strict=False)
-    for p in os.environ.get("TRUSTED_PROXIES", "").split(",")
-    if p.strip()
-)
+#
+# Read in main(), after load_env(), so values from .env apply too.
+
+
+def _env_list(name: str) -> list[str]:
+    return [v.strip() for v in os.environ.get(name, "").split(",") if v.strip()]
+
+
+@dataclass(frozen=True)
+class Settings:
+    max_sessions: int = 8
+    max_session_seconds: float = 300.0
+    max_starts_per_hour: int = 60
+    max_per_ip: int = 2  # at the same time
+    max_starts_per_ip_hour: int = 12
+    # X-Forwarded-For is client-controlled, so it is only read when the direct
+    # peer is one of these proxies (IPs or CIDRs). Empty = never trusted.
+    trusted_proxies: tuple = ()
+    # Browsers always send Origin on a websocket upgrade. Empty = only this
+    # page's own host may open /ws, so another site cannot spend our credits
+    # through its visitors. Non-browser clients can forge Origin; the caps cover those.
+    allowed_origins: frozenset = frozenset()
+
+    @classmethod
+    def from_env(cls) -> "Settings":
+        env = os.environ.get
+        return cls(
+            max_sessions=int(env("MAX_SESSIONS", cls.max_sessions)),
+            max_session_seconds=float(env("MAX_SESSION_SECONDS", cls.max_session_seconds)),
+            max_starts_per_hour=int(env("MAX_STARTS_PER_HOUR", cls.max_starts_per_hour)),
+            max_per_ip=int(env("MAX_SESSIONS_PER_IP", cls.max_per_ip)),
+            max_starts_per_ip_hour=int(env("MAX_STARTS_PER_IP_HOUR", cls.max_starts_per_ip_hour)),
+            trusted_proxies=tuple(ipaddress.ip_network(p, strict=False) for p in _env_list("TRUSTED_PROXIES")),
+            allowed_origins=frozenset(o.rstrip("/") for o in _env_list("ALLOWED_ORIGINS")),
+        )
 
 
 class SessionGate:
@@ -74,10 +98,10 @@ class SessionGate:
 
     def __init__(
         self,
-        max_sessions=MAX_SESSIONS,
-        max_starts_per_hour=MAX_STARTS_PER_HOUR,
-        max_per_ip=MAX_PER_IP,
-        max_starts_per_ip_hour=MAX_STARTS_PER_IP_HOUR,
+        max_sessions=Settings.max_sessions,
+        max_starts_per_hour=Settings.max_starts_per_hour,
+        max_per_ip=Settings.max_per_ip,
+        max_starts_per_ip_hour=Settings.max_starts_per_ip_hour,
         clock=time.monotonic,
     ):
         self.max_sessions, self.max_starts = max_sessions, max_starts_per_hour
@@ -123,13 +147,7 @@ class SessionGate:
             self._active.pop(ip, None)
 
 
-# Browsers always send Origin on a websocket upgrade. Default: only this page's own
-# host may open /ws, so another site cannot spend our credits through its visitors.
-# Non-browser clients can forge Origin; the session caps above cover those.
-ALLOWED_ORIGINS = frozenset(o.strip().rstrip("/") for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip())
-
-
-def origin_allowed(request: web.Request, allowed=ALLOWED_ORIGINS) -> bool:
+def origin_allowed(request: web.Request, allowed: frozenset = frozenset()) -> bool:
     origin = request.headers.get("Origin", "").rstrip("/")
     if allowed:
         return origin in allowed
@@ -144,7 +162,7 @@ def _public_ip(value: str | None) -> str | None:
     return None if ip.is_private or ip.is_loopback else str(ip)
 
 
-def client_ip(request: web.Request, trusted=TRUSTED_PROXIES) -> str | None:
+def client_ip(request: web.Request, trusted: tuple = ()) -> str | None:
     """The visitor's public address, or None when it cannot be known.
 
     X-Forwarded-For is honored only from a trusted proxy, and then its last hop is
@@ -310,12 +328,13 @@ class Session:
 
 
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:
-    if not origin_allowed(request):
+    settings: Settings = request.app["settings"]
+    if not origin_allowed(request, settings.allowed_origins):
         raise web.HTTPForbidden(text="cross-origin websocket refused")
     ws = web.WebSocketResponse(max_msg_size=1 << 20)  # mic chunks are a few KB
     await ws.prepare(request)
     gate: SessionGate = request.app["gate"]
-    ip = client_ip(request)
+    ip = client_ip(request, settings.trusted_proxies)
     refused = gate.admit(ip)
     print(f"session ({'per-visitor' if ip else 'global'} limits): {refused or 'admitted'}", flush=True)
     if refused:
@@ -327,8 +346,10 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     writer_task = asyncio.create_task(session.writer())
 
     async def time_cap() -> None:
-        await asyncio.sleep(MAX_SESSION_SECONDS)
-        session.send_json({"type": "ended", "text": f"Demo calls end after {MAX_SESSION_SECONDS / 60:g} minutes."})
+        await asyncio.sleep(settings.max_session_seconds)
+        cap = settings.max_session_seconds
+        length = f"{cap / 60:g} minutes" if cap >= 60 else f"{cap:g} seconds"
+        session.send_json({"type": "ended", "text": f"Demo calls end after {length}."})
         await asyncio.sleep(0.2)  # let the writer flush it
         await ws.close()
 
@@ -368,7 +389,11 @@ def main() -> None:
 
     app = web.Application()
     app["keys"] = keys
-    app["gate"] = SessionGate()
+    settings = Settings.from_env()  # after load_env(), so .env values count
+    app["settings"] = settings
+    app["gate"] = SessionGate(
+        settings.max_sessions, settings.max_starts_per_hour, settings.max_per_ip, settings.max_starts_per_ip_hour
+    )
     app.add_routes(
         [
             web.get("/", index_handler),
