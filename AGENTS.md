@@ -124,13 +124,14 @@ before adding another full-duplex backend.
 These keep the demo correct and comparable across branches. Do not change them
 casually.
 
-- **Tuned constants are ground truth.** Window 5 s, hop ~2 s, EMA alpha 0.3
+- **Tuned constants are ground truth.** Window 5 s, hop 1 s, EMA alpha 0.3
   (the value the Tyto docs recommend), the per-dimension thresholds, the nudge
   bands. They live in `decision.py` and match the browser byte for byte. If you
   change one, change it in every branch and say why.
 - **Warm-up gate.** Never score until a full fresh 5 s window has been buffered
   since the last reset. On resume after the agent speaks, reset the analyzer and
-  re-warm. Stale audio must never skew a reading.
+  the EMA and re-warm (the docs ask for both). Stale audio must never skew a
+  reading, and an old average must never re-nudge a problem the user just fixed.
 - **Mute and pause while the agent speaks.** The mic is muted (no frames sent to
   the agent) and scoring is paused while the agent talks; both resume after.
 - **A nudge always needs a cause the user can act on.** A high risk_score alone
@@ -253,7 +254,7 @@ newer option if you want it.
 
 ```bash
 uv pip install -e ".[dev]"
-uv run pytest -q                 # 68 tests: decision, controller (+judge), scorer, jev, gpt-live
+uv run pytest -q                 # 74 tests: decision, controller (+judge), scorer, jev, gpt-live, server gate
 ```
 
 The unit tests need no SDK, key, network or hardware (Jev is tested through an
@@ -268,7 +269,11 @@ environment `tyto-demo`, URL label pinned to `tyto-demo`, secret
 `tyto-demo-live-keys` (AIC_SDK_LICENSE, OPENAI_API_KEY, AI_GATEWAY_API_KEY),
 Tyto model baked into the image at `/models`. The server honours `HOST`,
 `PORT` and `AIC_MODELS_DIR` for that. Deploy with `-e tyto-demo` or the app
-lands in the profile's default environment. Roll back with
+lands in the profile's default environment. The server caps sessions (`SessionGate`
+in `server.py`: count, starts per hour, 300 s length; per-visitor caps only when a
+real client address is visible, which Modal's proxy does not provide) and Modal caps
+containers at 2: every call spends OpenAI credits, so keep those guards on any
+public deploy. Roll back with
 `modal app rollback tyto-demo -e tyto-demo`. For up to a minute after a
 deploy the old container still answers some requests, so wait for several
 consecutive new responses before checking the live page.

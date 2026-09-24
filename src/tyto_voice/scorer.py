@@ -12,8 +12,10 @@ The two behaviors worth understanding:
 
 - Pause / resume: while the agent is speaking the mic is muted, so scoring is
   paused and incoming audio is dropped. On resume we ``reset()`` the analyzer
-  (clearing stale audio) and wait for a fresh full window. This matches the
-  browser worker so the two demos behave identically.
+  (clearing stale audio), clear the smoothing state, and wait for a fresh full
+  window. The docs ask for both resets. Keeping the old average would let a
+  problem the user just fixed re-trigger a nudge from history alone. This matches
+  the browser worker so the two demos behave identically.
 
 The scorer does not own the microphone. Call :meth:`feed` from your own audio
 callback (the voice agent does this so it can also forward the same frames to
@@ -74,6 +76,7 @@ class LiveTytoScorer:
         self._residual = np.empty(0, dtype=np.float32)  # leftover < one block
         self._scoring = True
         self._smoothed: Scores | None = None
+        self._generation = 0  # bumped on every reset; a result from an older one is dropped
 
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -106,6 +109,12 @@ class LiveTytoScorer:
         if self._thread:
             self._thread.join(timeout=2.0)
             self._thread = None
+        if self._analyzer is not None:
+            try:
+                self._analyzer.terminate_session()  # close the usage session now, not at GC
+            except Exception:  # noqa: BLE001 - already closed is fine
+                pass
+            self._analyzer = self._collector = None
 
     # -- audio in ----------------------------------------------------------- #
 
@@ -147,6 +156,8 @@ class LiveTytoScorer:
             self._residual = np.empty(0, dtype=np.float32)
             self._scoring = True
             self._warm = False
+            self._smoothed = None
+            self._generation += 1
         # Say so: until a full fresh window is buffered there are no new scores,
         # and a UI still reading "scoring" just looks frozen.
         self._emit_state("warming", "re-warming - keep talking")
@@ -181,20 +192,25 @@ class LiveTytoScorer:
         while not self._stop.wait(self._hop_seconds):
             with self._lock:
                 ready = self._scoring and self._buffered >= self._window_samples
-            if not ready:
+                generation, analyzer = self._generation, self._analyzer
+            if not ready or analyzer is None:
                 continue
             try:
-                result = self._analyzer.analyze_buffered()
+                result = analyzer.analyze_buffered()
             except Exception as err:  # noqa: BLE001 - surfaced to the UI
                 self._emit_state("error", f"Tyto error: {err}")
                 continue
             raw = Scores.from_result(result)
-            self._smoothed = raw.ema(self._smoothed, self._ema_alpha)
-            if not self._warm:
+            with self._lock:
+                if generation != self._generation or not self._scoring:
+                    continue  # reset or paused mid-analysis: this window is stale
+                self._smoothed = smoothed = raw.ema(self._smoothed, self._ema_alpha)
+                first = not self._warm
                 self._warm = True
+            if first:
                 self._emit_state("live", "scoring")
             if self.on_scores:
-                self.on_scores(self._smoothed)
+                self.on_scores(smoothed)
 
     def _emit_state(self, state: str, text: str) -> None:
         if self._on_state:

@@ -153,6 +153,7 @@ let ws = null, connected = false;
 let micCtx = null, micStream = null, tapNode = null, micBuf = [];
 let playCtx = null, playHead = 0, activeSources = 0, agentDone = false, agentPlaying = false;
 let lastRoom = null, lastVad = null, lastJev = null;
+let endReason = "";  // why the server ended the call (busy, time cap), shown after hang-up
 
 function send(obj) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); }
 
@@ -164,6 +165,7 @@ registerProcessor("tap",Tap);`;
 
 async function start() {
   setStatus("connecting", "Connecting");
+  endReason = "";
   clearConvo(); resetRisk(); lastRoom = null; lastVad = null; lastJev = null;
   setAgent("Connecting", "calling the agent"); setJudge("–", "Jev picks the agent's move when audio gets bad");
   try {
@@ -210,7 +212,7 @@ function stop() {
   if (playCtx) { playCtx.close().catch(() => {}); playCtx = null; }
   setTytoState(null, "start to score your mic");
   setAgent("Idle", "what it does about your audio");
-  setStatus("", "Not connected");
+  setStatus("", endReason || "Not connected");
 }
 
 // mic: batch ~20 ms of float32 into PCM16 and send
@@ -304,6 +306,7 @@ function onMessage(ev) {
       addLine("tyto", `${m.label} ${m.value.toFixed(2)}` + (lastJev ? ` · Jev: ${lastJev.source === "fallback" ? "rule" : `${(ACTION_WORDS[lastJev.action] || lastJev.action).toLowerCase()} (${Math.round((lastJev.confidence || 0) * 100)}%)`}` : "") + ` · the agent stops and asks you to fix it`, "action");
       lastJev = null;
       log("tyto.nudge", m.text); break;
+    case "ended": endReason = m.text; log("session.ended", m.text); break;
     case "agent_done": agentDone = true; maybeIdle(); break;
     case "flush": flushPlayback(); break;
     case "log":

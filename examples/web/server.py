@@ -26,7 +26,10 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import os
+import time
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -45,6 +48,79 @@ INDEX = HERE / "index.html"
 APP_JS = HERE / "app.js"
 DS_DIR = HERE / "ds"  # ai-coustics design-system tokens (fonts, colors, typography, spacing, base)
 ASSETS_DIR = HERE / "assets"  # logo mark; the licensed Milling webfont goes in assets/fonts, gitignored
+
+# Abuse guard for a public deploy. Every session spends the server's OpenAI and
+# gateway credits, so cap how many run, how long, and how many start per hour.
+# Per process: on Modal that is per container. Per-visitor limits need a real
+# client address; Modal's web_server proxy sends none (every request arrives from
+# its internal 172.x hop), so there only the global limits apply.
+MAX_SESSIONS = int(os.environ.get("MAX_SESSIONS", "8"))
+MAX_SESSION_SECONDS = float(os.environ.get("MAX_SESSION_SECONDS", "300"))
+MAX_STARTS_PER_HOUR = int(os.environ.get("MAX_STARTS_PER_HOUR", "60"))
+MAX_PER_IP = int(os.environ.get("MAX_SESSIONS_PER_IP", "2"))  # at the same time
+MAX_STARTS_PER_IP_HOUR = int(os.environ.get("MAX_STARTS_PER_IP_HOUR", "12"))
+
+
+class SessionGate:
+    """Admits a session or says why not. Pure bookkeeping, no I/O, so it is unit tested."""
+
+    def __init__(
+        self,
+        max_sessions=MAX_SESSIONS,
+        max_starts_per_hour=MAX_STARTS_PER_HOUR,
+        max_per_ip=MAX_PER_IP,
+        max_starts_per_ip_hour=MAX_STARTS_PER_IP_HOUR,
+        clock=time.monotonic,
+    ):
+        self.max_sessions, self.max_starts = max_sessions, max_starts_per_hour
+        self.max_per_ip, self.max_ip_starts = max_per_ip, max_starts_per_ip_hour
+        self._clock = clock
+        self._active: dict[str | None, int] = {}
+        self._starts: dict[str | None, deque] = {}
+
+    def _recent(self, key: str | None, now: float) -> deque:
+        starts = self._starts.setdefault(key, deque())
+        while starts and now - starts[0] > 3600:
+            starts.popleft()
+        return starts
+
+    def admit(self, ip: str | None) -> str | None:
+        """Take a slot and return None, or return why not. ``ip`` None = unknown visitor."""
+        now = self._clock()
+        everyone = self._recent("*", now)
+        if sum(self._active.values()) >= self.max_sessions:
+            return "The demo is busy right now. Try again in a minute."
+        if len(everyone) >= self.max_starts:
+            return "The demo has hit its hourly call limit. Try again later."
+        if ip is not None:
+            if self._active.get(ip, 0) >= self.max_per_ip:
+                return "You already have a call open. Hang up there first."
+            if len(self._recent(ip, now)) >= self.max_ip_starts:
+                return "Call limit reached for this hour. Try again later."
+            self._starts[ip].append(now)
+        everyone.append(now)
+        self._active[ip] = self._active.get(ip, 0) + 1
+        return None
+
+    def release(self, ip: str | None) -> None:
+        if self._active.get(ip, 0) > 1:
+            self._active[ip] -= 1
+        else:
+            self._active.pop(ip, None)
+
+
+def client_ip(request: web.Request) -> str | None:
+    """The visitor's address, or None when only a proxy's private address is visible."""
+    forwarded = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+    if forwarded:
+        return forwarded
+    remote = request.remote
+    try:
+        if remote and not ipaddress.ip_address(remote).is_private:
+            return remote
+    except ValueError:
+        pass
+    return None  # behind Modal: 172.x for everyone, so per-visitor limits would lock all out
 
 
 class Session:
@@ -176,10 +252,27 @@ class Session:
 
 
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:
-    ws = web.WebSocketResponse(max_msg_size=0)
+    ws = web.WebSocketResponse(max_msg_size=1 << 20)  # mic chunks are a few KB
     await ws.prepare(request)
+    gate: SessionGate = request.app["gate"]
+    ip = client_ip(request)
+    refused = gate.admit(ip)
+    print(f"session ({'per-visitor' if ip else 'global'} limits): {refused or 'admitted'}", flush=True)
+    if refused:
+        await ws.send_json({"type": "ended", "text": refused})
+        await ws.close()
+        return ws
+
     session = Session(ws, asyncio.get_running_loop(), request.app["keys"])
     writer_task = asyncio.create_task(session.writer())
+
+    async def time_cap() -> None:
+        await asyncio.sleep(MAX_SESSION_SECONDS)
+        session.send_json({"type": "ended", "text": f"Demo calls end after {MAX_SESSION_SECONDS / 60:g} minutes."})
+        await asyncio.sleep(0.2)  # let the writer flush it
+        await ws.close()
+
+    cap_task = asyncio.create_task(time_cap())
     try:
         async for msg in ws:
             if msg.type == WSMsgType.BINARY:
@@ -187,8 +280,10 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
             elif msg.type == WSMsgType.TEXT:
                 session.on_message(msg.json())
     finally:
+        cap_task.cancel()
         session.stop()
         writer_task.cancel()
+        gate.release(ip)
     return ws
 
 
@@ -213,6 +308,7 @@ def main() -> None:
 
     app = web.Application()
     app["keys"] = keys
+    app["gate"] = SessionGate()
     app.add_routes(
         [
             web.get("/", index_handler),

@@ -1724,12 +1724,16 @@ registerProcessor("tap",Tap);`;
     // Audio-in is off while the agent speaks (mic muted, tap dropped), so only
     // score when the user's audio is actually flowing. Pausing the worker keeps
     // cause streaks frozen during agent speech instead of clearing them; on
-    // resume the analyzer resets and rewarms with a full window of fresh audio.
+    // resume the analyzer and the smoothing reset and rewarm with a full window
+    // of fresh audio.
     function syncWorkerGate() {
       const shouldScore = connected && listening && !agentSpeaking && !agentAudioPlaying;
       if (!tytoWorker || shouldScore === workerScoring) return;
       workerScoring = shouldScore;
       tytoWorker.postMessage({ type: shouldScore ? "resume" : "pause" });
+      // The docs ask to clear smoothing with the analyzer: an old average would
+      // re-trigger a nudge the user already fixed.
+      if (shouldScore) emaMetrics = null;
       // A resume resets the analyzer, so there are no new scores until a fresh
       // 5 s window is buffered. Say that instead of leaving the UI on "scoring".
       if (shouldScore) setTytoState("warming", "re-warming — keep talking");

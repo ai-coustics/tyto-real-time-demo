@@ -1,35 +1,43 @@
-# Tyto voice agent, Python reference
+# Tyto real-time demo
 
-A Python port of the [Tyto](https://docs.ai-coustics.com) acoustics-aware
-voice-agent demo. You talk to a live voice agent; in parallel **Tyto scores your
-microphone in real time** with the ai-coustics Python SDK, and the agent adapts
-to your acoustics on three layers: it stays aware of your room, retunes
-turn-taking when it gets noisy, and nudges you when something is fixable ("Could
-you turn the TV down?").
+On a bad call, people adapt: "Sorry, it's loud where you are. Could you move somewhere quieter?" This demo gives a voice agent the same instinct. When the user's audio gets bad, the agent stops and asks them to fix it, then carries on.
 
-This branch is the server-side sibling of the browser reference in
-[index.html](index.html) (OpenAI Realtime over WebRTC, fully client-side). The
-Tyto scoring contract and the tuned constants are identical to that reference so
-behavior is comparable across stacks.
+[Try it live](https://ai-coustics-tyto-demo--tyto-demo.modal.run/) (calls are time-capped, use headphones or speakers with echo cancellation).
 
-Two things are new here compared to the browser reference. The voice is
-**GPT-Live 1** (`gpt-live-1`, OpenAI's full-duplex Live API) by default, with
-the Realtime API one env var away. And the Reactive layer has a judge: **Jev**,
-TypeSafe AI's System One model, called through Vercel AI Gateway. Tyto and the
-tuned thresholds still decide *that* the user's audio has a fixable problem; Jev
-decides in about 300 ms *how* the agent should act on it right now (cut in, let
-the agent finish its sentence, adapt quietly, or stay silent because the user
-was just asked). See [How Jev judges the nudge](#how-jev-judges-the-nudge).
+## What Tyto gives you
 
-Both stacks run **Tyto 1.1** (`tyto-1.1-l-16khz`) on `aic-sdk` 3.x in Python and
-`@ai-coustics/aic-sdk-wasm` 0.23.x in the browser. The browser reference talks
-to OpenAI's `gpt-realtime-2.1`; this branch talks to `gpt-live-1` (or to
-`gpt-realtime-2.1` with `VOICE_BACKEND=realtime`). Tyto 1.1 keeps the same 5 s / 16 kHz mono contract as 1.0
-while being much smaller and faster, and it changes the metrics: the old
-background-media dimension is folded into `interfering_speech` (competing speech
-from anything, live or a device), `codec_degradation` is new, and the risk-score
-bands are now <0.30 good / 0.30-0.50 warn / >0.50 bad. Scores from 1.0 and 1.1
-are not directly comparable.
+Tyto (`tyto-1.1-l-16khz`) is the ai-coustics audio insight model. It scores the user's microphone in real time, per 5 second window. It runs on your CPU through the Python SDK, so no audio leaves your host for scoring.
+
+Act on one number: `risk_score`, 0 to 1, the likelihood the audio makes your agent fail (below 0.30 good, 0.30 to 0.50 warn, above 0.50 bad). Six dimensions say why. The score decides when. The dimensions only pick the words:
+
+| Dimension | The agent asks |
+| --- | --- |
+| `noise` | "Could you move somewhere quieter?" |
+| `interfering_speech` | "Could you turn down anything playing nearby?" |
+| `packet_loss` | "Could you check your connection?" |
+
+## How the agent acts
+
+The backend smooths the risk score with a moving average, so one spike does nothing. When it reaches 0.40 and one fixable cause dominates, the agent (OpenAI GPT-Live 1 by default) stops and asks the user to fix it. The first reaction comes after about 5 seconds of speech, once Tyto has a full window.
+
+Optional extras: room-aware prompting, patient turn-taking in noise, and a Jev judge (`AI_GATEWAY_API_KEY`) that decides when to cut in. Without them the rule above works on its own.
+
+## Start
+
+Get an SDK key at [developers.ai-coustics.com](https://developers.ai-coustics.com).
+
+```bash
+uv venv
+cp .env.example .env            # set AIC_SDK_LICENSE and OPENAI_API_KEY
+uv pip install -e ".[web]"
+uv run examples/web/server.py   # open http://localhost:8080
+uv run examples/score_mic.py    # scores only, needs just AIC_SDK_LICENSE
+```
+
+- [Code tour](docs/CODE_TOUR.md): the ~150 lines that make the agent react, in build order.
+- [tyto-nudge skill](skills/tyto-nudge/SKILL.md): lets a coding agent add this to Pipecat, LiveKit or a custom stack.
+- [index.html](index.html) (browser-only version) and [AGENTS.md](AGENTS.md) (contributor context).
+- [Real-time analysis docs](https://docs.ai-coustics.com/models/audio-insight/real-time-analysis). Other SDKs: Rust, Node.js, C, C++, WASM, and a LiveKit plugin.
 
 ## What is in here
 
@@ -153,7 +161,7 @@ and as client delegation on GPT-Live (the model delegates "how do I sound?" to
 the backend, which answers with the live Tyto reading), so the user can ask at
 any time.
 
-### How Jev judges the nudge
+### Optional: how Jev judges the nudge
 
 Layer 3 has two stages when a gateway key is present:
 
@@ -221,6 +229,13 @@ modal secret create tyto-demo-live-keys \
     AIC_SDK_LICENSE=... OPENAI_API_KEY=... AI_GATEWAY_API_KEY=... -e tyto-demo
 modal deploy deploy/modal_app.py -e tyto-demo   # https://ai-coustics-tyto-demo--tyto-demo.modal.run/
 ```
+
+The public deploy spends your credits on every call, so the server guards
+itself, per container: at most `MAX_SESSIONS` (8) calls at once and
+`MAX_STARTS_PER_HOUR` (60) new calls an hour, and every call ends after
+`MAX_SESSION_SECONDS` (300). When the server sees a real client address (not on
+Modal, whose proxy hides it) it also caps each visitor with `MAX_SESSIONS_PER_IP`
+(2) and `MAX_STARTS_PER_IP_HOUR` (12). All of them are env vars.
 
 Deploying to the `tyto-demo` app name replaces whatever version lived there
 (the URL is pinned by label, so bookmarks survive); `modal app rollback

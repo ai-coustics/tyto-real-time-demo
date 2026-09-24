@@ -78,7 +78,7 @@ image = (
     # terminal demo imports it, and it would need PortAudio for a code path that
     # never runs on a server.
     .pip_install(
-        "aic-sdk>=3.1",
+        "aic-sdk>=3.2",
         "numpy>=1.24",
         "aiohttp>=3.9",
         "websockets>=13",
@@ -104,7 +104,10 @@ secrets = [modal.Secret.from_name(SECRET_NAME)]
     # the GPT-Live socket and Jev calls, which are network-bound.
     cpu=4.0,
     memory=2048,
-    max_containers=10,
+    # With the server's own MAX_SESSIONS=8 per container this caps the whole
+    # deploy at 16 calls at once. Every call spends OpenAI credits, so raise it
+    # on purpose, not by default.
+    max_containers=2,
     # A browser tab holds its socket open, so do not tear the container down the
     # moment a request finishes.
     scaledown_window=300,
