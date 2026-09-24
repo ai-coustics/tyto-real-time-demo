@@ -59,7 +59,29 @@ class FakeRequest:
         self.remote, self.headers = remote, headers or {}
 
 
-def test_client_ip_ignores_private_proxy_hops():
-    assert client_ip(FakeRequest("172.20.1.210")) is None
-    assert client_ip(FakeRequest("172.20.1.210", {"X-Forwarded-For": "8.8.8.8, 10.0.0.1"})) == "8.8.8.8"
-    assert client_ip(FakeRequest("1.1.1.1")) == "1.1.1.1"
+PROXY = (__import__("ipaddress").ip_network("10.0.0.0/8"),)
+
+
+def test_client_ip_ignores_private_peers_without_a_trusted_proxy():
+    assert client_ip(FakeRequest("172.20.1.210"), trusted=()) is None  # Modal
+    assert client_ip(FakeRequest("1.1.1.1"), trusted=()) == "1.1.1.1"
+
+
+def test_forwarded_for_is_ignored_from_untrusted_peers():
+    spoofed = FakeRequest("1.1.1.1", {"X-Forwarded-For": "8.8.8.8"})
+    assert client_ip(spoofed, trusted=PROXY) == "1.1.1.1"
+
+
+def test_forwarded_for_from_a_trusted_proxy_uses_the_last_hop_and_validates_it():
+    assert client_ip(FakeRequest("10.0.0.5", {"X-Forwarded-For": "9.9.9.9, 8.8.8.8"}), trusted=PROXY) == "8.8.8.8"
+    assert client_ip(FakeRequest("10.0.0.5", {"X-Forwarded-For": "not-an-ip"}), trusted=PROXY) is None
+
+
+def test_visitor_table_stays_bounded():
+    gate, t = make(max_sessions=10**6, max_starts_per_hour=10**6)
+    for i in range(1000):
+        gate.admit(f"ip{i}")
+        gate.release(f"ip{i}")
+    t[0] = 3601
+    gate.admit("fresh")
+    assert set(gate._starts) == {"*", "fresh"}

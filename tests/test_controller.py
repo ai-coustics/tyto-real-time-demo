@@ -22,6 +22,7 @@ class FakeProvider(VoiceProvider):
     def nudge(self, text): self.calls.append(("nudge", text))
     def request_response(self): self.calls.append(("request_response", None))
     def send_tool_result(self, call_id, output): self.calls.append(("tool_result", call_id))
+    def send_audio(self, mono): ...
 
     def kinds(self):
         return [c[0] for c in self.calls]
@@ -66,7 +67,7 @@ def test_aware_pushes_room_note_then_clears():
     assert any(k == "instructions" and "other voices" in v for k, v in provider.calls)
     provider.calls.clear()
     controller.on_scores(make(risk_score=0.1))  # clean again
-    assert any(k == "instructions" for k in provider.kinds())  # instructions reset
+    assert "instructions" in provider.kinds()  # instructions reset
 
 
 def test_tuned_swaps_turn_detection_on_noise():
@@ -218,3 +219,13 @@ def test_situation_carries_transcript_context_and_ask_history():
     controller.on_scores(make(risk_score=0.7, noise=0.8))
     s2 = judge.asked[-1][0]
     assert s2.times_asked == 1 and 11 < s2.since_ask_s < 13 and not s2.caller_speaking
+
+
+def test_provider_contract_requires_send_audio():
+    import pytest
+
+    commands = ("connect", "disconnect", "set_instructions", "set_turn_detection", "set_mic_enabled",
+                "interrupt", "nudge", "request_response", "send_tool_result")
+    incomplete = type("Incomplete", (VoiceProvider,), {c: lambda self, *a, **k: None for c in commands})
+    with pytest.raises(TypeError, match="send_audio"):
+        incomplete(handlers=None)

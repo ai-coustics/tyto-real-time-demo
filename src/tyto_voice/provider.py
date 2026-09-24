@@ -15,6 +15,7 @@ Commands (app -> provider):
     nudge(text)                      Layer 3 - one spoken line
     request_response()               let the agent speak first (opening greeting)
     send_tool_result(call_id, out)   answer a tool call, then let the agent reply
+    send_audio(mono)                 forward one block of mono float32 mic audio
 
 Events (provider -> app) are delivered through a Handlers object, all optional:
     on_ready()
@@ -23,6 +24,7 @@ Events (provider -> app) are delivered through a Handlers object, all optional:
     on_user_transcript(text, final)
     on_agent_transcript(text, final)
     on_tool_call(name, call_id)
+    on_closed(error)                 the session ended without disconnect(); error or None
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ class Handlers:
     on_user_transcript: Callable[[str, bool], None] | None = None
     on_agent_transcript: Callable[[str, bool], None] | None = None
     on_tool_call: Callable[[str, str], None] | None = None
+    on_closed: Callable[[str | None], None] | None = None
 
 
 class VoiceProvider(ABC):
@@ -72,3 +75,11 @@ class VoiceProvider(ABC):
 
     @abstractmethod
     def send_tool_result(self, call_id: str, output: dict) -> None: ...
+
+    @abstractmethod
+    def send_audio(self, mono) -> None: ...
+
+    def _closed_unexpectedly(self, error: str | None) -> None:
+        """Call from the transport thread when the session ends and disconnect() did not end it."""
+        if self.h.on_closed:
+            self.h.on_closed(error)

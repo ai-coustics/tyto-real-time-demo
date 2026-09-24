@@ -59,6 +59,13 @@ MAX_SESSION_SECONDS = float(os.environ.get("MAX_SESSION_SECONDS", "300"))
 MAX_STARTS_PER_HOUR = int(os.environ.get("MAX_STARTS_PER_HOUR", "60"))
 MAX_PER_IP = int(os.environ.get("MAX_SESSIONS_PER_IP", "2"))  # at the same time
 MAX_STARTS_PER_IP_HOUR = int(os.environ.get("MAX_STARTS_PER_IP_HOUR", "12"))
+# X-Forwarded-For is client-controlled, so it is only read when the direct peer is
+# one of these proxies (comma-separated IPs or CIDRs). Empty = never trusted.
+TRUSTED_PROXIES = tuple(
+    ipaddress.ip_network(p.strip(), strict=False)
+    for p in os.environ.get("TRUSTED_PROXIES", "").split(",")
+    if p.strip()
+)
 
 
 class SessionGate:
@@ -84,9 +91,15 @@ class SessionGate:
             starts.popleft()
         return starts
 
+    def _prune(self, now: float) -> None:
+        """Forget visitors with no start in the last hour, so the table stays bounded."""
+        for key in [k for k, d in self._starts.items() if k != "*" and (not d or now - d[-1] > 3600)]:
+            del self._starts[key]
+
     def admit(self, ip: str | None) -> str | None:
         """Take a slot and return None, or return why not. ``ip`` None = unknown visitor."""
         now = self._clock()
+        self._prune(now)
         everyone = self._recent("*", now)
         if sum(self._active.values()) >= self.max_sessions:
             return "The demo is busy right now. Try again in a minute."
@@ -109,18 +122,31 @@ class SessionGate:
             self._active.pop(ip, None)
 
 
-def client_ip(request: web.Request) -> str | None:
-    """The visitor's address, or None when only a proxy's private address is visible."""
-    forwarded = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-    if forwarded:
-        return forwarded
+def _public_ip(value: str | None) -> str | None:
+    try:
+        ip = ipaddress.ip_address((value or "").strip())
+    except ValueError:
+        return None
+    return None if ip.is_private or ip.is_loopback else str(ip)
+
+
+def client_ip(request: web.Request, trusted=TRUSTED_PROXIES) -> str | None:
+    """The visitor's public address, or None when it cannot be known.
+
+    X-Forwarded-For is honored only from a trusted proxy, and then its last hop is
+    used: that one was appended by our proxy, the earlier ones by the client. A
+    private peer with no trusted header (Modal: 172.x for everyone) gives None,
+    so per-visitor limits are skipped instead of locking every visitor out.
+    """
     remote = request.remote
     try:
-        if remote and not ipaddress.ip_address(remote).is_private:
-            return remote
+        peer = ipaddress.ip_address(remote or "")
     except ValueError:
-        pass
-    return None  # behind Modal: 172.x for everyone, so per-visitor limits would lock all out
+        peer = None
+    if peer is not None and any(peer in net for net in trusted):
+        hops = request.headers.get("X-Forwarded-For", "").split(",")
+        return _public_ip(hops[-1])
+    return _public_ip(remote)
 
 
 class Session:
@@ -185,7 +211,18 @@ class Session:
         controller = TytoController(provider, scorer, judge=judge, on_update=self._on_update, on_log=log)
         scorer.on_scores = controller.on_scores
 
-        handlers.on_ready = controller.on_ready
+        def on_ready() -> None:
+            self.send_json({"type": "status", "state": "live", "label": f"Live · {provider.model}"})
+            controller.on_ready()
+
+        def on_closed(error: str | None) -> None:
+            text = f"The voice agent disconnected: {error}" if error else "The voice agent hung up."
+            self.send_json({"type": "ended", "text": text})
+            self.send_json({"type": "status", "state": "error", "label": "Disconnected"})
+            self.loop.call_soon_threadsafe(self.close_soon)
+
+        handlers.on_ready = on_ready
+        handlers.on_closed = on_closed
         handlers.on_agent_speaking = controller.on_agent_speaking
         # on_agent_audio is driven by the browser, which plays the audio and
         # reports when the agent becomes audible / falls silent.
@@ -197,12 +234,19 @@ class Session:
         self.send_json({"type": "config", "backend": provider.model, "judge": judge.model if judge else None})
         try:
             scorer.start()  # downloads the model (cached) and checks the license
-            provider.connect()
+            provider.connect()  # "live" is reported from on_ready, once the session is up
             controller.set_connected(True)
-            self.send_json({"type": "status", "state": "live", "label": f"Live · {provider.model}"})
         except Exception as err:  # noqa: BLE001 - surface to the browser
             self.send_json({"type": "tyto_state", "state": "error", "text": str(err)})
             self.send_json({"type": "status", "state": "error", "label": "Error"})
+
+    def close_soon(self) -> None:
+        """Close the browser socket after queued messages are written (event loop only)."""
+        async def close() -> None:
+            await asyncio.sleep(0.2)
+            await self.ws.close()
+
+        asyncio.ensure_future(close())
 
     def stop(self) -> None:
         if self.controller:

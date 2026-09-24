@@ -91,17 +91,22 @@ class OpenAIRealtimeProvider(VoiceProvider):
         self._thread.start()
 
     def disconnect(self) -> None:
-        if self._loop and self._ws:
+        if self._loop and self._ws and not self._loop.is_closed():
             asyncio.run_coroutine_threadsafe(self._ws.close(), self._loop)
         self.closed.set()
 
     def _run(self) -> None:
+        error = None
         try:
             asyncio.run(self._main())
         except Exception as err:  # noqa: BLE001
-            self._log("error", str(err))
+            error = str(err)
+            self._log("error", error)
         finally:
+            expected = self.closed.is_set()  # disconnect() sets it first
             self.closed.set()
+            if not expected:
+                self._closed_unexpectedly(error)
 
     async def _main(self) -> None:
         from websockets.asyncio.client import connect

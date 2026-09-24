@@ -189,8 +189,9 @@ names the verdict that fired it. A Jev timeout or error is logged as a fallback 
 
 - **Echo cancellation.** The web demo captures the mic in the browser with echo
   cancellation on, so speakers are fine. The terminal agent plays through a raw
-  output device with no cancellation, so use headphones there. In both, the
-  controller stops sending mic audio to the agent while the agent speaks.
+  output device with no cancellation, so use headphones there. In both, Tyto
+  pauses while the agent speaks, and the mic is muted only while a nudge plays,
+  so the user can still interrupt an ordinary reply.
 - **Audio transport.** The browser reference uses WebRTC straight to OpenAI; here
   audio is PCM16 mono at 24 kHz, relayed browser to backend to OpenAI and back.
   Tyto is fed the same 24 kHz frames and resamples internally to its 16 kHz rate.
@@ -233,9 +234,10 @@ modal deploy deploy/modal_app.py -e tyto-demo   # https://ai-coustics-tyto-demo-
 The public deploy spends your credits on every call, so the server guards
 itself, per container: at most `MAX_SESSIONS` (8) calls at once and
 `MAX_STARTS_PER_HOUR` (60) new calls an hour, and every call ends after
-`MAX_SESSION_SECONDS` (300). When the server sees a real client address (not on
-Modal, whose proxy hides it) it also caps each visitor with `MAX_SESSIONS_PER_IP`
-(2) and `MAX_STARTS_PER_IP_HOUR` (12). All of them are env vars.
+`MAX_SESSION_SECONDS` (300). When the server sees a public client address it also
+caps each visitor with `MAX_SESSIONS_PER_IP` (2) and `MAX_STARTS_PER_IP_HOUR` (12).
+`X-Forwarded-For` is read only from peers listed in `TRUSTED_PROXIES`; Modal's
+proxy sends none, so there only the global caps apply. All of them are env vars.
 
 Deploying to the `tyto-demo` app name replaces whatever version lived there
 (the URL is pinned by label, so bookmarks survive); `modal app rollback

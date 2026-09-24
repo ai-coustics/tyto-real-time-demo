@@ -132,8 +132,12 @@ casually.
   since the last reset. On resume after the agent speaks, reset the analyzer and
   the EMA and re-warm (the docs ask for both). Stale audio must never skew a
   reading, and an old average must never re-nudge a problem the user just fixed.
-- **Mute and pause while the agent speaks.** The mic is muted (no frames sent to
-  the agent) and scoring is paused while the agent talks; both resume after.
+- **Pause scoring while the agent speaks; mute only around a nudge.** Tyto never
+  scores while the agent talks (its voice would leak in). The mic keeps flowing
+  to the agent during ordinary replies so the user can barge in, same as the
+  browser reference; echo cancellation keeps the agent from hearing itself. It is
+  muted from a nudge's trip until the nudge has played, so the noise that caused
+  it cannot start a new turn.
 - **A nudge always needs a cause the user can act on.** A high risk_score alone
   never nudges; one dimension must dominate (`strongest_cause`), and it must be
   one with nudge text. `codec_degradation` deliberately has none: it is a

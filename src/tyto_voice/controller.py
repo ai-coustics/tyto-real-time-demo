@@ -18,8 +18,9 @@ here and the nudge fires with no added wait. Without a judge, or when Jev times
 out, the gate fires the nudge directly as before.
 
 It also answers the ``check_audio_quality`` tool, and gates scoring so Tyto only
-reads the user's audio while the user is actually speaking (mic muted, scoring
-paused while the agent talks).
+reads the user's audio while the user is actually speaking (scoring paused while
+the agent talks). The mic itself is muted only around a nudge, so the user can
+still barge in on an ordinary reply.
 
 All state is guarded by a single re-entrant lock because scores arrive on the
 scorer thread, provider events on the transport thread, and Jev verdicts on the

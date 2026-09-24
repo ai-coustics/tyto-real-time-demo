@@ -161,12 +161,17 @@ class OpenAILiveProvider(VoiceProvider):
         self.closed.set()
 
     def _run(self) -> None:
+        error = None
         try:
             asyncio.run(self._main())
         except Exception as err:  # noqa: BLE001
-            self._log("error", str(err))
+            error = str(err)
+            self._log("error", error)
         finally:
+            expected = self.closed.is_set()  # disconnect() sets it first
             self.closed.set()
+            if not expected:
+                self._closed_unexpectedly(error)
 
     async def _main(self) -> None:
         from websockets.asyncio.client import connect

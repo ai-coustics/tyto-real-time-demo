@@ -151,7 +151,8 @@ function setNudgeThreshold(v) {
 // ── Transport: websocket + mic + agent playback ───────────────────────────────
 let ws = null, connected = false;
 let micCtx = null, micStream = null, tapNode = null, micBuf = [];
-let playCtx = null, playHead = 0, activeSources = 0, agentDone = false, agentPlaying = false;
+let playCtx = null, playHead = 0, agentDone = false, agentPlaying = false;
+const sources = new Set();  // scheduled agent audio, so a flush can stop it
 let lastRoom = null, lastVad = null, lastJev = null;
 let endReason = "";  // why the server ended the call (busy, time cap), shown after hang-up
 
@@ -239,12 +240,12 @@ function playChunk(arrayBuffer) {
   if (playHead < now) playHead = now;
   node.start(playHead);
   playHead += buf.duration;
-  activeSources++;
+  sources.add(node);
   if (!agentPlaying) { agentPlaying = true; send({ type: "agent_playing", value: true }); }
-  node.onended = () => { activeSources--; maybeIdle(); };
+  node.onended = () => { sources.delete(node); maybeIdle(); };
 }
 function maybeIdle() {
-  if (activeSources <= 0 && agentDone && agentPlaying) {
+  if (sources.size === 0 && agentDone && agentPlaying) {
     agentPlaying = false; agentDone = false;
     send({ type: "agent_playing", value: false });
   }
@@ -252,7 +253,11 @@ function maybeIdle() {
 function flushPlayback() {
   agentDone = false;
   if (agentPlaying) { agentPlaying = false; send({ type: "agent_playing", value: false }); }
-  activeSources = 0; playHead = 0;
+  // Stop what is already scheduled, or an interrupt only resets counters while the
+  // queued audio keeps playing. Detach onended first so a stopped node cannot
+  // touch the bookkeeping of the next response.
+  for (const node of sources) { node.onended = null; try { node.stop(); } catch {} node.disconnect(); }
+  sources.clear(); playHead = 0;
 }
 
 // the Agent tile: the latest adaptation, Reactive over Aware over Tuned

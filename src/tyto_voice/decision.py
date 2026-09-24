@@ -8,7 +8,7 @@ test, and reuse.
 It does two things:
 
 1. Defines the *scoring contract*: the ``Scores`` value object and the tuned
-   constants (5 s window, ~2 s hop, EMA alpha 0.3). These match the browser
+   constants (5 s window, 1 s hop, EMA alpha 0.3). These match the browser
    reference (``index.html``) byte for byte so behavior is comparable.
 
 2. Defines the *decision layer*: given a smoothed ``Scores`` reading it answers
