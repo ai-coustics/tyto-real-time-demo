@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("aiohttp")
 sys.path.insert(0, str(Path(__file__).parent.parent / "examples" / "web"))
-from server import SessionGate, client_ip  # noqa: E402
+from server import SessionGate, client_ip, origin_allowed  # noqa: E402
 
 
 def make(**kw):
@@ -55,8 +55,8 @@ def test_unknown_visitors_share_only_the_global_limits():
 
 
 class FakeRequest:
-    def __init__(self, remote, headers=None):
-        self.remote, self.headers = remote, headers or {}
+    def __init__(self, remote, headers=None, host="demo.example"):
+        self.remote, self.headers, self.host = remote, headers or {}, host
 
 
 PROXY = (__import__("ipaddress").ip_network("10.0.0.0/8"),)
@@ -85,3 +85,15 @@ def test_visitor_table_stays_bounded():
     t[0] = 3601
     gate.admit("fresh")
     assert set(gate._starts) == {"*", "fresh"}
+
+
+def test_websocket_origin_must_match_the_page_by_default():
+    assert origin_allowed(FakeRequest("1.1.1.1", {"Origin": "https://demo.example"}), allowed=frozenset())
+    assert not origin_allowed(FakeRequest("1.1.1.1", {"Origin": "https://evil.example"}), allowed=frozenset())
+    assert not origin_allowed(FakeRequest("1.1.1.1"), allowed=frozenset())  # no Origin: not a browser page
+
+
+def test_websocket_origin_allowlist_overrides_same_host():
+    allowed = frozenset({"https://site.example"})
+    assert origin_allowed(FakeRequest("1.1.1.1", {"Origin": "https://site.example/"}), allowed=allowed)
+    assert not origin_allowed(FakeRequest("1.1.1.1", {"Origin": "https://demo.example"}), allowed=allowed)

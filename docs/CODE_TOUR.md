@@ -39,9 +39,10 @@ The three parts to read:
   is padded with silence and the score would mean nothing. **So the first
   reaction comes after about 5 seconds of speech.**
 - [`resume()`](../src/tyto_voice/scorer.py#L147) resets the analyzer and the smoothing after
-  the agent has spoken. The mic is muted while the agent talks, so older audio
+  the agent has spoken. Scoring pauses while the agent talks, so older audio
   would skew the next score, and an old average would re-ask about a problem
-  the user has just fixed.
+  the user has just fixed. The mic itself keeps flowing to the agent so the user
+  can interrupt it; it is muted only while a nudge plays.
 
 ## 2. What Tyto returns
 

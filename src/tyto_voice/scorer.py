@@ -10,8 +10,10 @@ The two behaviors worth understanding:
   full window has been buffered, which would skew the reading. So we never score
   until ``WINDOW_SECONDS`` of real audio has been buffered since the last reset.
 
-- Pause / resume: while the agent is speaking the mic is muted, so scoring is
-  paused and incoming audio is dropped. On resume we ``reset()`` the analyzer
+- Pause / resume: while the agent is speaking, scoring is paused and the scorer
+  drops incoming audio. (The mic still reaches the voice provider during
+  ordinary replies so the user can barge in; the controller mutes it only around
+  a nudge.) On resume we ``reset()`` the analyzer
   (clearing stale audio), clear the smoothing state, and wait for a fresh full
   window. The docs ask for both resets. Keeping the old average would let a
   problem the user just fixed re-trigger a nudge from history alone. This matches

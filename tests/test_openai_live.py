@@ -46,6 +46,7 @@ def build():
         on_user_transcript=lambda t, f: events.append(("user", t, f)),
         on_agent_transcript=lambda t, f: events.append(("agent", t, f)),
         on_tool_call=lambda n, c: events.append(("tool", n, c)),
+        on_closed=lambda err: events.append(("closed", err)),
     )
     p = OpenAILiveProvider(
         h, api_key="sk-test", instructions=BASE, audio_out=audio.append,
@@ -221,3 +222,22 @@ def test_errors_and_close_are_logged_and_close_ends_the_session():
     p._receive({"type": "error", "error": {"code": "invalid_audio", "message": "odd bytes"}})
     p._receive({"type": "session.closed", "reason": "close_requested", "usage": {"seconds": 12}})
     assert ("error", "invalid_audio odd bytes") in logs and p.closed.is_set()
+
+
+def test_server_initiated_close_is_reported_once():
+    p, events, *_ = build()
+    p._receive({"type": "session.closed", "reason": "max_duration"})
+
+    async def socket_ended():
+        return None
+
+    p._main = socket_ended
+    p._run()  # the transport thread winding down must not report it a second time
+    assert [e for e in events if e[0] == "closed"] == [("closed", "max_duration")]
+
+
+def test_close_after_disconnect_is_not_reported():
+    p, events, *_ = build()
+    p.closed.set()  # what disconnect() does first
+    p._receive({"type": "session.closed", "reason": "close_requested"})
+    assert not [e for e in events if e[0] == "closed"]

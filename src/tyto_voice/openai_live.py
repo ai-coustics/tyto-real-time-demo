@@ -298,8 +298,11 @@ class OpenAILiveProvider(VoiceProvider):
             err = msg.get("error") or {}
             self._log("error", f"{err.get('code', '')} {err.get('message', '')}".strip())
         elif t == "session.closed":
-            self._log("session.closed", f"{msg.get('reason', '')} {json.dumps(msg.get('usage') or {})}")
-            self.closed.set()
+            reason = msg.get("reason", "")
+            self._log("session.closed", f"{reason} {json.dumps(msg.get('usage') or {})}")
+            if not self.closed.is_set():  # the server ended it, not disconnect()
+                self._closed_unexpectedly(reason or None)
+            self.closed.set()  # so _run's finally does not report it a second time
 
     def _on_audio(self, pcm16: bytes) -> None:
         now = self._clock()

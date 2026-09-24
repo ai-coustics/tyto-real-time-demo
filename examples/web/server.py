@@ -31,6 +31,7 @@ import os
 import time
 from collections import deque
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import numpy as np
 from aiohttp import WSMsgType, web
@@ -120,6 +121,19 @@ class SessionGate:
             self._active[ip] -= 1
         else:
             self._active.pop(ip, None)
+
+
+# Browsers always send Origin on a websocket upgrade. Default: only this page's own
+# host may open /ws, so another site cannot spend our credits through its visitors.
+# Non-browser clients can forge Origin; the session caps above cover those.
+ALLOWED_ORIGINS = frozenset(o.strip().rstrip("/") for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip())
+
+
+def origin_allowed(request: web.Request, allowed=ALLOWED_ORIGINS) -> bool:
+    origin = request.headers.get("Origin", "").rstrip("/")
+    if allowed:
+        return origin in allowed
+    return bool(origin) and urlsplit(origin).netloc == request.host
 
 
 def _public_ip(value: str | None) -> str | None:
@@ -296,6 +310,8 @@ class Session:
 
 
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:
+    if not origin_allowed(request):
+        raise web.HTTPForbidden(text="cross-origin websocket refused")
     ws = web.WebSocketResponse(max_msg_size=1 << 20)  # mic chunks are a few KB
     await ws.prepare(request)
     gate: SessionGate = request.app["gate"]

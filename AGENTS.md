@@ -258,7 +258,7 @@ newer option if you want it.
 
 ```bash
 uv pip install -e ".[dev]"
-uv run pytest -q                 # 74 tests: decision, controller (+judge), scorer, jev, gpt-live, server gate
+uv run pytest -q                 # 84 tests: decision, controller (+judge), scorer, jev, gpt-live, server gate
 ```
 
 The unit tests need no SDK, key, network or hardware (Jev is tested through an

@@ -1721,7 +1721,8 @@ registerProcessor("tap",Tap);`;
         sampleRate: TAP_RATE, hopMs: TYTO_HOP_MS, windowSeconds: TYTO_WINDOW_S,
       });
     }
-    // Audio-in is off while the agent speaks (mic muted, tap dropped), so only
+    // Tyto's input is off while the agent speaks (tap dropped; the mic itself is
+    // muted only around a nudge, so the user can still barge in), so only
     // score when the user's audio is actually flowing. Pausing the worker keeps
     // cause streaks frozen during agent speech instead of clearing them; on
     // resume the analyzer and the smoothing reset and rewarm with a full window

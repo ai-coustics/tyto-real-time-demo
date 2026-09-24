@@ -237,7 +237,9 @@ itself, per container: at most `MAX_SESSIONS` (8) calls at once and
 `MAX_SESSION_SECONDS` (300). When the server sees a public client address it also
 caps each visitor with `MAX_SESSIONS_PER_IP` (2) and `MAX_STARTS_PER_IP_HOUR` (12).
 `X-Forwarded-For` is read only from peers listed in `TRUSTED_PROXIES`; Modal's
-proxy sends none, so there only the global caps apply. All of them are env vars.
+proxy sends none, so there only the global caps apply. The websocket also only
+accepts browsers on the page's own origin (or those listed in `ALLOWED_ORIGINS`),
+so another site cannot open calls through its visitors. All of them are env vars.
 
 Deploying to the `tyto-demo` app name replaces whatever version lived there
 (the URL is pinned by label, so bookmarks survive); `modal app rollback
