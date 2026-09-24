@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="inverse">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tyto · Live voice agent</title>
+  <!-- the ai-coustics mark as the tab icon, light and dark, same as the other Tyto demos -->
+  <link rel="icon" type="image/png" media="(prefers-color-scheme: dark)" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAHlBMVEVMaXH////////////////////////////////////Z6AnKAAAACXRSTlMAAxux7FrVmX0FRZq3AAAACXBIWXMAAA7EAAAOxAGVKw4bAAAA7klEQVR42u2W2w7DIAhARUDl/394trPb7LoqkOzJk/ShTThcNNYQFovF/4ENR7Qze30il8zm9LGgVNCYHgqJmAU1fRKxCyAwiUNQ40Ucgj7eUsG7f5MAQhaP4Ggg5WQV7AWkGCDZWoj0DDtaQVsHFJtJL2gjJDRtZTg6d6yCVgDxBKkEW8vUI2rBgBzgVlC8Ah4JeCD4GtqJuqMG4L0AdaeHtoPLndORIPhKGBdwPwU0nIFdA3GmgN9LSVPx/X9In78ZLuaA0/H7OcKnIhJDAN1RxPgaBaEy/OM+USkc2we94vpFeakC7+VosVhM8QAZYRZoqv1m6wAAAABJRU5ErkJggg==" />
+  <link rel="icon" type="image/png" media="(prefers-color-scheme: light)" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAHlBMVEVMaXEDAgMUExQVExUVFBUVFBUVFBUREBEWFBYXFheE60K5AAAACXRSTlMAAzWMY73fFaA4/m4/AAAACXBIWXMAAA7EAAAOxAGVKw4bAAAA7ElEQVR42u2WUQ7DIAhAAUHl/heeW2OztllRSPflS/pXXgURC7BYLP4PIoaigx9vD6UqDC5RC6KUtZFcAoRSdcMlQOCsAQFCUg0IDvEOQVu/RgQIpCEBgIQEPQFh8a7gEyitE7JH0CvwDqs+wZZBpl7L6RR6CfNoEfFAz9y/C0UnBXSCZwWiBg8L+mbfwIaALQEZAjLic5k7exeqUUMzBzL76NJ6B2R2gM0v4L4KIwcBb5IQHJwhPwxSIGQYjT/chN/54/gkaC/yqZRCs7MQue6J5EQwfyG1niLmlJgJATx3MsZ/b/bRulgsnucFUncXASIl174AAAAASUVORK5CYII=" />
+  <link rel="apple-touch-icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAHlBMVEVMaXH////////////////////////////////////Z6AnKAAAACXRSTlMAAxux7FrVmX0FRZq3AAAACXBIWXMAAA7EAAAOxAGVKw4bAAAA7klEQVR42u2W2w7DIAhARUDl/394trPb7LoqkOzJk/ShTThcNNYQFovF/4ENR7Qze30il8zm9LGgVNCYHgqJmAU1fRKxCyAwiUNQ40Ucgj7eUsG7f5MAQhaP4Ggg5WQV7AWkGCDZWoj0DDtaQVsHFJtJL2gjJDRtZTg6d6yCVgDxBKkEW8vUI2rBgBzgVlC8Ah4JeCD4GtqJuqMG4L0AdaeHtoPLndORIPhKGBdwPwU0nIFdA3GmgN9LSVPx/X9In78ZLuaA0/H7OcKnIhJDAN1RxPgaBaEy/OM+USkc2we94vpFeakC7+VosVhM8QAZYRZoqv1m6wAAAABJRU5ErkJggg==" />
+  <!-- ai-coustics design system tokens (copied from the Audio Insight post-call demo, see ds/) -->
+  <link rel="stylesheet" href="/ds/fonts.css" />
+  <link rel="stylesheet" href="/ds/colors.css" />
+  <link rel="stylesheet" href="/ds/typography.css" />
+  <link rel="stylesheet" href="/ds/spacing.css" />
+  <link rel="stylesheet" href="/ds/base.css" />
+  <style>
+    /* App styles on top of the tokens. Inverse (black) shell, hairline cards,
+       mono eyebrows and telemetry, display numerals: the post-call demo's look. */
+    html, body { height: 100%; }
+    html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+    button, a, input { touch-action: manipulation; }
+    body { background: var(--surface-page); color: var(--text-primary); }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 999px; border: 3px solid var(--surface-page); }
+    ::-webkit-scrollbar-track { background: transparent; }
+    .mono { font-family: var(--font-mono); }
+    .muted { color: var(--text-tertiary); }
+
+    /* top bar */
+    .topbar {
+      position: sticky; top: 0; z-index: 40;
+      display: flex; align-items: center; gap: 14px;
+      height: 58px; padding: 0 32px;
+      border-bottom: 1px solid var(--border-subtle);
+      background: rgba(15, 15, 15, .72);
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    }
+    .topbar > * { flex: 0 0 auto; white-space: nowrap; }
+    .topbar .brand-link { display: flex; align-items: center; gap: 14px; text-decoration: none; }
+    .topbar .brand-link:hover { text-decoration: none; }
+    .topbar .mark { width: 24px; height: 24px; border-radius: 5px; }
+    .topbar .brand { font-family: var(--font-display); font-size: 18px; letter-spacing: -0.01em; color: var(--text-primary); }
+    .topbar .brand-sub { font-family: var(--font-mono); font-size: 12px; letter-spacing: .04em; color: var(--text-tertiary); }
+    .topbar .spacer { flex: 1 1 auto; min-width: 0; }
+    .topbar nav { display: flex; gap: 18px; margin-right: 6px; }
+    .topbar nav a { font-family: var(--font-sans); font-size: 13px; font-weight: 500; color: var(--text-secondary); text-decoration: none; }
+    .topbar nav a:hover { color: var(--text-primary); text-decoration: none; }
+
+    /* status and kind badges */
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px 3px 8px;
+      font-family: var(--font-sans); font-size: 12px; font-weight: 600; line-height: 1.4;
+      border-radius: var(--radius-pill); white-space: nowrap;
+      color: var(--gray-40); background: var(--surface-sunken);
+    }
+    .badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--gray-60); flex: 0 0 auto; }
+    .badge.positive { color: #43d6c0; background: rgba(0, 191, 166, .16); } .badge.positive .dot { background: var(--teal); }
+    .badge.warning { color: #f4cd7a; background: rgba(244, 185, 66, .18); } .badge.warning .dot { background: var(--amber); }
+    .badge.critical { color: #eaa597; background: rgba(226, 140, 124, .20); } .badge.critical .dot { background: var(--clay); }
+    .badge.accent { color: #9db8ff; background: rgba(105, 147, 255, .16); } .badge.accent .dot { background: var(--blue-40); }
+    .badge.sm { padding: 1px 8px; font-size: 10.5px; font-family: var(--font-mono); font-weight: 500; letter-spacing: .02em; }
+    #status.badge { border: 1px solid var(--border-subtle); background: transparent; padding: 6px 12px 6px 10px; font-family: var(--font-mono); font-weight: 500; font-size: 12px; color: var(--text-secondary); }
+    #status.badge.positive { color: #43d6c0; } #status.badge.warning { color: #f4cd7a; } #status.badge.critical { color: #eaa597; }
+
+    /* page */
+    .page { max-width: var(--container-max); margin: 0 auto; padding: 44px 32px 64px; display: flex; flex-direction: column; gap: 16px; }
+
+    /* hero */
+    .hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 32px; margin-bottom: 8px; }
+    .hero-text { max-width: 640px; }
+    .hero h1 { font-size: 40px; letter-spacing: -0.025em; line-height: 1.08; margin: 10px 0 14px; }
+    .hero .lede { font-size: 15px; line-height: 1.55; color: var(--text-secondary); margin: 0; }
+    .hero-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 14px; flex: 0 0 auto; }
+    .cta {
+      display: inline-flex; align-items: center; gap: 10px; height: 46px; padding: 0 20px;
+      border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+      background: var(--surface-card); color: var(--text-primary);
+      font-family: var(--font-sans); font-size: 15px; font-weight: 500; cursor: pointer; -webkit-tap-highlight-color: transparent;
+      transition: border-color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard);
+    }
+    .cta:hover { border-color: var(--border-strong); }
+    .cta svg { width: 18px; height: 18px; color: var(--text-secondary); }
+    .cta.live { border-color: var(--blue-40); background: var(--accent-wash); color: #bcd0ff; }
+    .cta.live svg { color: var(--blue-40); }
+    .tune { display: flex; align-items: center; gap: 10px; font-family: var(--font-mono); font-size: 11.5px; color: var(--text-tertiary); letter-spacing: .02em; }
+    .tune input[type=range] { width: 140px; accent-color: var(--blue-40); }
+    .tune .val { color: var(--text-secondary); min-width: 52px; text-align: right; }
+
+    /* stat tiles */
+    .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .tile { background: var(--surface-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 16px 18px; min-width: 0; }
+    .tile-label { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-tertiary); }
+    .tile-value { display: flex; align-items: baseline; gap: 6px; margin-top: 12px; min-height: 34px; }
+    .tile-value .num { font-family: var(--font-display); font-size: 32px; line-height: 1; letter-spacing: -0.02em; color: var(--text-primary); }
+    .tile-value .num.text { font-size: 26px; line-height: 1.12; overflow-wrap: anywhere; }
+    .tile-value .unit { font-family: var(--font-display); font-size: 17px; color: var(--text-tertiary); }
+    .tile-sub { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-tertiary); margin-top: 9px; min-height: 32px; line-height: 1.4; overflow: hidden; }
+    .tile .bar { margin-top: 12px; }
+
+    /* severity bars (3 to 4 px, pill, subtle track) */
+    .bar { position: relative; height: 3px; border-radius: 999px; background: rgba(255, 255, 255, .07); overflow: visible; width: 100%; }
+    .bar.risk { height: 4px; }
+    .bar-fill { height: 100%; width: 2%; border-radius: 999px; background: var(--gray-60); transition: width var(--dur-slow) var(--ease-out), background var(--dur-base) var(--ease-standard); }
+    .bar-marker { position: absolute; top: -4px; width: 2px; height: 12px; background: var(--off-white); opacity: .55; border-radius: 1px; transform: translateX(-1px); }
+
+    /* cards */
+    .card { background: var(--surface-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 16px 18px; min-width: 0; }
+    .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .card-head .state { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-tertiary); }
+    .card-head .state.warming { color: #f4cd7a; } .card-head .state.error { color: #eaa597; }
+
+    /* six dimensions */
+    .dim-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 18px; }
+    .dim-label { font-family: var(--font-mono); font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .dim-val { font-family: var(--font-mono); font-size: 13.5px; font-weight: 500; color: var(--text-primary); margin: 10px 0 7px; }
+
+    /* conversation and activity */
+    .two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .convo, .activity { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+    .convo .line { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 12px; font-size: 14px; line-height: 1.5; }
+    .convo .what { overflow-wrap: anywhere; }
+    .convo .who { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-tertiary); padding-top: 3px; }
+    .convo .line.agent .who { color: #9db8ff; }
+    .convo .line.tyto .who { color: #f4cd7a; }
+    .convo .line.interim .what { color: var(--text-secondary); }
+    .convo .line.tyto .what { color: var(--text-secondary); font-family: var(--font-mono); font-size: 12.5px; padding-top: 2px; }
+    .convo .empty, .activity .empty { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-tertiary); }
+    .activity .entry { display: grid; grid-template-columns: 62px auto minmax(0, 1fr); gap: 10px; align-items: baseline; font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
+    .activity .ts { color: var(--text-tertiary); font-size: 11px; }
+    .activity .msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* Responsive. Small laptops stack the hero, tablets go two-up, phones get a compact
+       top bar (brand, Docs, status), a full-width button and a two-column grid everywhere. */
+    @media (max-width: 1023px) {
+      .hero { flex-direction: column; align-items: stretch; gap: 22px; }
+      .hero-text { max-width: 720px; }
+      .hero-actions { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 12px 24px; }
+    }
+    @media (max-width: 899px) {
+      .topbar { padding: 0 16px; gap: 12px; }
+      .page { padding: 32px 16px 48px; }
+      .hero h1 { font-size: 34px; }
+      .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .dim-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .two { grid-template-columns: minmax(0, 1fr); }
+    }
+    @media (max-width: 640px) {
+      .topbar { height: 52px; gap: 10px; }
+      .topbar .brand-link { gap: 10px; }
+      .topbar .mark { width: 22px; height: 22px; }
+      .topbar .brand { font-size: 16px; }
+      .topbar .brand-sub, .topbar nav .ext, #status .detail { display: none; }
+      .topbar nav { margin-right: 0; }
+      #status.badge { padding: 5px 10px 5px 8px; font-size: 11px; }
+      .page { padding: 24px 16px 40px; gap: 12px; }
+      .hero { gap: 18px; margin-bottom: 4px; }
+      .hero h1 { font-size: 28px; line-height: 1.12; margin: 8px 0 10px; }
+      .hero-actions { flex-direction: column; align-items: stretch; gap: 14px; }
+      .cta { width: 100%; justify-content: center; height: 50px; }
+      .tune { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; }
+      .tune input[type=range] { width: 100%; }
+      .tiles { gap: 10px; }
+      .tile, .card { padding: 14px; }
+      .tile-value { margin-top: 10px; min-height: 0; }
+      .tile-value .num { font-size: 28px; }
+      .tile-value .num.text { font-size: 20px; line-height: 1.15; }
+      .tile-sub { min-height: 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+      .card-head { flex-wrap: wrap; row-gap: 4px; margin-bottom: 12px; }
+      .dim-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; }
+      .dim-val { margin: 6px 0; }
+      .convo, .activity { max-height: 300px; }
+      .convo .line { grid-template-columns: 44px minmax(0, 1fr); gap: 10px; }
+      .activity .entry { grid-template-columns: auto minmax(0, 1fr); gap: 8px; }
+      .activity .ts { display: none; }
+      .activity .msg { white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    }
+    @media (max-width: 359px) {
+      .topbar nav { display: none; }
+      .tiles { grid-template-columns: minmax(0, 1fr); }
+    }
+  </style>
+</head>
+
+<body>
+  <header class="topbar">
+    <a class="brand-link" href="https://ai-coustics.com" target="_blank" rel="noopener">
+      <img class="mark" src="/assets/aic-mark-on-black.png" alt="" />
+      <span class="brand">ai-coustics</span>
+    </a>
+    <span class="brand-sub">/ Tyto</span>
+    <div class="spacer"></div>
+    <nav>
+      <a href="https://docs.ai-coustics.com" target="_blank" rel="noopener">Docs</a>
+      <a class="ext" href="https://ai-coustics.com" target="_blank" rel="noopener">ai-coustics &rarr;</a>
+    </nav>
+    <span id="status" class="badge"><span class="dot"></span><span class="label">Not connected</span></span>
+  </header>
+
+  <main class="page">
+    <section class="hero">
+      <div class="hero-text">
+        <span class="aic-eyebrow">Tyto · live voice agent demo</span>
+        <h1>Talk to a voice agent that hears your room</h1>
+        <p class="lede">Tyto listens to your mic while you talk. When your audio gets bad, it tells the agent,
+          and the agent reacts: it asks you to fix it, waits for a better moment, or carries on.</p>
+      </div>
+      <div class="hero-actions">
+        <button id="mic" class="cta" aria-label="Toggle mic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+            <line x1="12" y1="19" x2="12" y2="23"></line>
+            <line x1="8" y1="23" x2="16" y2="23"></line>
+          </svg>
+          <span id="mic-label">Talk to the agent</span>
+        </button>
+        <label class="tune" for="nudge-th">
+          <span>Nudge sensitivity</span>
+          <input type="range" id="nudge-th" min="0.30" max="0.50" step="0.01" value="0.40" aria-label="Nudge sensitivity" />
+          <span class="val" id="nudge-th-val">≥ 0.40</span>
+        </label>
+      </div>
+    </section>
+
+    <section class="tiles">
+      <div class="tile">
+        <div class="tile-label">Tyto risk score</div>
+        <div class="tile-value"><span class="num" id="risk-val">–</span><span class="unit" id="risk-band"></span></div>
+        <div class="bar risk"><div class="bar-fill" id="risk-fill"></div><div class="bar-marker" id="risk-marker" title="A nudge can fire once the risk crosses this line"></div></div>
+        <div class="tile-sub" id="risk-sub">lower is better · nudge at ≥ 0.40</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Agent</div>
+        <div class="tile-value"><span class="num text" id="agent-val">Idle</span></div>
+        <div class="tile-sub" id="agent-sub">what it does about your audio</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Decision</div>
+        <div class="tile-value"><span class="num text" id="judge-val">–</span></div>
+        <div class="tile-sub" id="judge-sub">Jev picks the agent's move when audio gets bad</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Voice agent</div>
+        <div class="tile-value"><span class="num text" id="models-val">GPT-Live 1</span></div>
+        <div class="tile-sub" id="models-sub">scored by Tyto 1.1</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><span class="aic-eyebrow">What Tyto hears</span><span class="state" id="tyto-state">start to score your mic</span></div>
+      <div class="dim-grid" id="env-grid"></div>
+    </section>
+
+    <section class="two">
+      <div class="card">
+        <div class="card-head"><span class="aic-eyebrow">Conversation</span></div>
+        <div id="conversation" class="convo"><div class="empty">The conversation shows up here.</div></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><span class="aic-eyebrow">Activity</span></div>
+        <div id="log" class="activity"><div class="empty">What Tyto and Jev tell the agent.</div></div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="/app.js"></script>
+</body>
+
+</html>

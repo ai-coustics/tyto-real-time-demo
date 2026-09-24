@@ -1,0 +1,53 @@
+/* ============================================================
+   ai-coustics · Typography tokens
+   ------------------------------------------------------------
+   Milling      → display, headings, big numerals, logo lockups
+   Hanken Grot. → body & UI  (substitution, see readme)
+   Geist Mono   → code, telemetry, metrics, API payloads
+   Type scale is a ~1.25 minor-third, tightened at body sizes.
+   ============================================================ */
+
+:root {
+  /* families */
+  --font-display: 'Milling', 'Hanken Grotesk', system-ui, sans-serif;
+  --font-sans: 'Hanken Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* weights */
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* fluid display sizes (clamped) */
+  --text-display-xl: clamp(3rem, 6vw, 5.25rem);   /* hero */
+  --text-display-l: clamp(2.5rem, 4.5vw, 3.75rem);
+  --text-display-m: clamp(2rem, 3.2vw, 2.75rem);
+
+  /* static step scale */
+  --text-4xl: 3rem;     /* 48 */
+  --text-3xl: 2.25rem;  /* 36 */
+  --text-2xl: 1.75rem;  /* 28 */
+  --text-xl: 1.375rem;  /* 22 */
+  --text-lg: 1.125rem;  /* 18 */
+  --text-md: 1rem;      /* 16 — base */
+  --text-sm: 0.875rem;  /* 14 */
+  --text-xs: 0.75rem;   /* 12 */
+
+  /* line-heights */
+  --leading-tight: 1.05;   /* display */
+  --leading-snug: 1.2;     /* headings */
+  --leading-normal: 1.55;  /* body */
+  --leading-relaxed: 1.7;
+
+  /* tracking */
+  --tracking-tight: -0.02em;   /* large display */
+  --tracking-normal: 0em;
+  --tracking-wide: 0.02em;
+  --tracking-caps: 0.08em;     /* eyebrow / overline */
+
+  /* ---- semantic roles ---- */
+  --role-eyebrow-size: var(--text-xs);
+  --role-body-size: var(--text-md);
+  --role-caption-size: var(--text-sm);
+}

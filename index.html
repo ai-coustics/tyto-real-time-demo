@@ -112,6 +112,18 @@
       font-weight: 400
     }
 
+    .topbar .brand .ver {
+      font-family: var(--font-mono, ui-monospace, monospace);
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: .04em;
+      color: var(--color-accent);
+      border: 1px solid var(--color-accent);
+      border-radius: 999px;
+      padding: 1px 6px;
+      opacity: .85
+    }
+
     .topbar nav {
       display: inline-flex;
       align-items: center;
@@ -898,7 +910,7 @@
   <div class="glow"></div>
   <header class="topbar">
     <a class="brand" href="https://ai-coustics.com" target="_blank" rel="noopener">
-      <span class="mark"></span>Tyto<span class="sub">— Audio Insights</span>
+      <span class="mark"></span>Tyto<span class="ver">1.1</span><span class="sub">— Audio Insights</span>
     </a>
     <nav>
       <button type="button" id="keys-btn" class="nav-btn">Enter keys</button>
@@ -950,8 +962,8 @@
       </div>
       <div class="composite-tune">
         <label for="nudge-th">Nudge sensitivity</label>
-        <input type="range" class="nudge-range" id="nudge-th" min="0.35" max="0.60" step="0.01" value="0.50" aria-label="Nudge sensitivity">
-        <span class="nudge-val" id="nudge-th-val">≥ 0.50</span>
+        <input type="range" class="nudge-range" id="nudge-th" min="0.30" max="0.50" step="0.01" value="0.40" aria-label="Nudge sensitivity">
+        <span class="nudge-val" id="nudge-th-val">≥ 0.40</span>
       </div>
     </div>
 
@@ -998,27 +1010,29 @@
   <audio id="remote" autoplay></audio>
 
   <script type="module">
-    const __WORKER_SRC__ = "// Tyto scoring worker \u00b7 runs the ai-coustics WASM SDK Analyzer off the UI thread.\n//\n// The page taps the mic at 16 kHz mono and streams Float32Array chunks here.\n// We feed them into the SDK Analyzer (which keeps its own rolling window) and\n// run analyze() every `hopMs`. Results go back as a flat snake_case metric\n// dict, mirroring what the old Python /tyto/score endpoint returned.\n//\n// Messages in:\n//   {type:\"init\", licenseKey, modelUrl, sampleRate, hopMs, windowSeconds}\n//   {type:\"audio\", chunk: Float32Array}    \u00b7 mic samples (transferred)\n//   {type:\"pause\"}                          \u00b7 agent speaking \u2192 drop audio, stop scoring\n//   {type:\"resume\"}                         \u00b7 user audio flowing again \u2192 reset + rewarm\n//   {type:\"stop\"}\n//\n// Messages out:\n//   {type:\"ready\", modelId, sdkVersion, numFrames}\n//   {type:\"scores\", scores: {risk_score, noise, \u2026}, analyzeMs}\n//   {type:\"error\", message}\n\n// SDK loaded straight from the public npm package via jsDelivr (pinned). The\n// glue resolves its companion .wasm relative to this URL, so there is nothing\n// to vendor \u2014 the wasm is fetched and CDN-cached on first load.\nimport init, { Model, Analyzer, getVersion } from \"https://cdn.jsdelivr.net/npm/@ai-coustics/aic-sdk-wasm@0.20.0/aic_sdk_wasm.js\";\n\nlet analyzer = null;\nlet numFrames = 0;\nlet sampleRate = 16000;\nlet windowSamples = 0;\nlet buffered = 0;          // samples fed since the last reset (warm-up gate)\nlet paused = false;\nlet timer = null;\n\n// Sample queue: chunks arrive as 128-frame worklet quanta, the analyzer wants\n// fixed `numFrames` blocks. Leftovers wait for the next chunk.\nlet queue = new Float32Array(0);\n\nfunction enqueue(chunk) {\n  const merged = new Float32Array(queue.length + chunk.length);\n  merged.set(queue, 0);\n  merged.set(chunk, queue.length);\n  let offset = 0;\n  while (merged.length - offset >= numFrames) {\n    analyzer.bufferInterleaved(merged.subarray(offset, offset + numFrames), 1, numFrames);\n    offset += numFrames;\n    buffered += numFrames;\n  }\n  queue = merged.slice(offset);\n}\n\nfunction tick() {\n  if (paused || !analyzer) return;\n  if (buffered < windowSamples) return;   // not enough real audio yet \u2192 don't score padded silence\n  const t0 = performance.now();\n  let result;\n  try {\n    result = analyzer.analyze();\n  } catch (err) {\n    postMessage({ type: \"error\", message: String(err) });\n    return;\n  }\n  const scores = {\n    risk_score: result.riskScore,\n    noise: result.noise,\n    speaker_reverb: result.speakerReverb,\n    speaker_loudness: result.speakerLoudness,\n    interfering_speech: result.interferingSpeech,\n    media_speech: result.mediaSpeech,\n    packet_loss: result.packetLoss,\n  };\n  result.free();\n  postMessage({ type: \"scores\", scores, analyzeMs: Math.round(performance.now() - t0) });\n}\n\nself.onmessage = async (e) => {\n  const msg = e.data;\n  if (msg.type === \"init\") {\n    try {\n      await init();\n      const bytes = new Uint8Array(await (await fetch(msg.modelUrl)).arrayBuffer());\n      const model = Model.fromBytes(bytes);\n      sampleRate = msg.sampleRate;\n      numFrames = model.getOptimalNumFrames(sampleRate);\n      windowSamples = Math.round(msg.windowSeconds * sampleRate);\n      analyzer = new Analyzer(model, msg.licenseKey);\n      analyzer.initialize(sampleRate, 1, numFrames, false);\n      postMessage({ type: \"ready\", modelId: model.getId(), sdkVersion: getVersion(), numFrames });\n      timer = setInterval(tick, msg.hopMs);\n    } catch (err) {\n      postMessage({ type: \"error\", message: String(err) });\n    }\n  } else if (msg.type === \"audio\") {\n    if (analyzer && !paused) enqueue(msg.chunk);\n  } else if (msg.type === \"pause\") {\n    paused = true;\n    queue = new Float32Array(0);\n  } else if (msg.type === \"resume\") {\n    // Stream discontinuity (mic was muted during agent speech): clear the\n    // analyzer's window so stale audio can't skew the next scores, then\n    // require a full window of fresh audio before scoring again.\n    if (analyzer) analyzer.reset();\n    queue = new Float32Array(0);\n    buffered = 0;\n    paused = false;\n  } else if (msg.type === \"stop\") {\n    if (timer) clearInterval(timer);\n    timer = null;\n    if (analyzer) { analyzer.free(); analyzer = null; }\n    close();\n  }\n};\n";
+    const __WORKER_SRC__ = "// Tyto scoring worker \u00b7 runs the ai-coustics WASM SDK Analyzer off the UI thread.\n//\n// The page taps the mic at 16 kHz mono and streams Float32Array chunks here.\n// We feed them into the SDK Analyzer (which keeps its own rolling window) and\n// run analyze() every `hopMs`. Results go back as a flat snake_case metric\n// dict, mirroring what the old Python /tyto/score endpoint returned.\n//\n// Messages in:\n//   {type:\"init\", licenseKey, modelUrl, sampleRate, hopMs, windowSeconds}\n//   {type:\"audio\", chunk: Float32Array}    \u00b7 mic samples (transferred)\n//   {type:\"pause\"}                          \u00b7 agent speaking \u2192 drop audio, stop scoring\n//   {type:\"resume\"}                         \u00b7 user audio flowing again \u2192 reset + rewarm\n//   {type:\"stop\"}\n//\n// Messages out:\n//   {type:\"ready\", modelId, sdkVersion, blockSize}\n//   {type:\"scores\", scores: {risk_score, noise, \u2026}, analyzeMs}\n//   {type:\"error\", message}\n\n// SDK loaded straight from the public npm package via jsDelivr (pinned). The\n// glue resolves its companion .wasm relative to this URL, so there is nothing\n// to vendor \u2014 the wasm is fetched and CDN-cached on first load. 0.23 is the SDK\n// generation that runs Tyto 1.1: mono `buffer()` calls sized in samples instead\n// of the old interleaved frame API, and `codecDegradation` in place of\n// `mediaSpeech`.\nimport init, { Model, Analyzer, getVersion } from \"https://cdn.jsdelivr.net/npm/@ai-coustics/aic-sdk-wasm@0.23.0/aic_sdk_wasm.js\";\n\nlet analyzer = null;\nlet blockSize = 0;\nlet sampleRate = 16000;\nlet windowSamples = 0;\nlet buffered = 0;          // samples fed since the last reset (warm-up gate)\nlet paused = false;\nlet timer = null;\n\n// Sample queue: chunks arrive as 128-frame worklet quanta, the analyzer wants\n// fixed `blockSize` mono blocks. Leftovers wait for the next chunk.\nlet queue = new Float32Array(0);\n\nfunction enqueue(chunk) {\n  const merged = new Float32Array(queue.length + chunk.length);\n  merged.set(queue, 0);\n  merged.set(chunk, queue.length);\n  let offset = 0;\n  while (merged.length - offset >= blockSize) {\n    analyzer.buffer(merged.subarray(offset, offset + blockSize));\n    offset += blockSize;\n    buffered += blockSize;\n  }\n  queue = merged.slice(offset);\n}\n\nfunction tick() {\n  if (paused || !analyzer) return;\n  if (buffered < windowSamples) return;   // not enough real audio yet \u2192 don't score padded silence\n  const t0 = performance.now();\n  let result;\n  try {\n    result = analyzer.analyze();\n  } catch (err) {\n    postMessage({ type: \"error\", message: String(err) });\n    return;\n  }\n  const scores = {\n    risk_score: result.riskScore,\n    noise: result.noise,\n    speaker_reverb: result.speakerReverb,\n    speaker_loudness: result.speakerLoudness,\n    interfering_speech: result.interferingSpeech,\n    packet_loss: result.packetLoss,\n    codec_degradation: result.codecDegradation,\n  };\n  result.free();\n  postMessage({ type: \"scores\", scores, analyzeMs: Math.round(performance.now() - t0) });\n}\n\nself.onmessage = async (e) => {\n  const msg = e.data;\n  if (msg.type === \"init\") {\n    try {\n      await init();\n      const bytes = new Uint8Array(await (await fetch(msg.modelUrl)).arrayBuffer());\n      const model = Model.fromBytes(bytes);\n      sampleRate = msg.sampleRate;\n      blockSize = model.getOptimalBlockSize(sampleRate);\n      windowSamples = Math.round(msg.windowSeconds * sampleRate);\n      analyzer = new Analyzer(model, msg.licenseKey);\n      analyzer.initialize(sampleRate, blockSize, false);\n      postMessage({ type: \"ready\", modelId: model.getId(), sdkVersion: getVersion(), blockSize });\n      timer = setInterval(tick, msg.hopMs);\n    } catch (err) {\n      postMessage({ type: \"error\", message: String(err) });\n    }\n  } else if (msg.type === \"audio\") {\n    if (analyzer && !paused) enqueue(msg.chunk);\n  } else if (msg.type === \"pause\") {\n    paused = true;\n    queue = new Float32Array(0);\n  } else if (msg.type === \"resume\") {\n    // Stream discontinuity (mic was muted during agent speech): clear the\n    // analyzer's window so stale audio can't skew the next scores, then\n    // require a full window of fresh audio before scoring again.\n    if (analyzer) analyzer.reset();\n    queue = new Float32Array(0);\n    buffered = 0;\n    paused = false;\n  } else if (msg.type === \"stop\") {\n    if (timer) clearInterval(timer);\n    timer = null;\n    // Close the telemetry session on demand instead of waiting for the GC to\n    // collect the analyzer handle.\n    if (analyzer) { try { analyzer.terminateSession(); } catch { } analyzer.free(); analyzer = null; }\n    close();\n  }\n};\n";
     const __WORKER_URL__ = URL.createObjectURL(new Blob([__WORKER_SRC__], { type: "text/javascript" }));
     const $ = (id) => document.getElementById(id);
     const $status = $("status"), $mic = $("mic"), $log = $("log"), $audio = $("remote");
     const $userTx = $("user-tx"), $agentTx = $("agent-tx"), $banner = $("banner");
 
-    // Scoring runs in the browser since SDK 0.20: static/tyto-worker.js hosts the
-    // WASM Analyzer (tyto-l-16khz) and posts a score dict every hop. Tyto's
-    // analysis window is fixed at 5 s; the hop just sets the UI cadence.
+    // Scoring runs in the browser: the worker above hosts the WASM Analyzer
+    // (Tyto 1.1) and posts a score dict every hop. Tyto's analysis window is
+    // fixed at 5 s; the hop just sets the UI cadence.
     let TYTO_WINDOW_S = 5;
-    let TYTO_HOP_MS = 2000;
+    let TYTO_HOP_MS = 1000;
     const TAP_RATE = 16000;              // mic tap → mono float32 chunks to the worker
     const SERIES_HISTORY_MS = 30000;
 
     // ── Serverless config (bring-your-own-keys) ───────────────────────────────────
     // No backend: the visitor's keys live only in this browser (localStorage) and
     // are sent straight to OpenAI / ai-coustics over HTTPS. Nothing reaches us.
-    const OPENAI_MODEL = "gpt-realtime";
+    const OPENAI_MODEL = "gpt-realtime-2.1";
     const OPENAI_VOICE = "alloy";
+    // Tyto 1.1 (model version 7). Fetched straight from the ai-coustics artifact
+    // CDN and handed to the worker as bytes.
     const TYTO_MODEL_URL =
-      "https://artifacts.ai-coustics.io/models/tyto-l-16khz/v5/tyto_l_16khz_yhlek4hc_v43.aicmodel";
+      "https://artifacts.ai-coustics.io/models/tyto-1-1-l-16khz/v7/tyto_1_1_l_16khz_t7y7v3h5_v58.aicmodel";
     const KEYS = {
       get openai() { return localStorage.getItem("aic_demo_openai_key") || ""; },
       get license() { return localStorage.getItem("aic_demo_license_key") || ""; },
@@ -1033,48 +1047,54 @@
       get present() { return !!(this.openai && this.license); },
     };
 
+    // The six Tyto 1.1 dimensions, in the docs' order. 1.1 folded the old
+    // background-media dimension into interfering_speech (any competing speech,
+    // live or from a TV / radio / phone) and added codec_degradation.
     const ENV_KEYS = ["noise", "speaker_reverb", "speaker_loudness",
-      "interfering_speech", "media_speech", "packet_loss"];
+      "interfering_speech", "packet_loss", "codec_degradation"];
     const ALL_KEYS = ENV_KEYS;
     const LABELS = {
       noise: "Noise",
       speaker_reverb: "Speaker Reverb",
       speaker_loudness: "Speaker Loudness",
       interfering_speech: "Interfering Speech",
-      media_speech: "Background Media",
       packet_loss: "Packet Loss",
+      codec_degradation: "Codec Degradation",
     };
     const ICONS = {
       noise: '<path d="M2 6c.6.5 1.2 1 2.5 1C7 7 7 5 9.5 5c2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"/><path d="M2 12c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"/><path d="M2 18c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"/>',
       speaker_reverb: '<circle cx="12" cy="12" r="2"/><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.2 19.1 19.1"/>',
       speaker_loudness: '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>',
       interfering_speech: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
-      media_speech: '<rect x="2" y="7" width="20" height="15" rx="2" ry="2"/><polyline points="17 2 12 7 7 2"/>',
       packet_loss: '<line x1="2" y1="2" x2="22" y2="22"/><path d="M8.5 16.5a5 5 0 0 1 7 0"/><path d="M2 8.82a15 15 0 0 1 4.17-2.65"/><path d="M10.66 5c4.01-.36 8.14.9 11.34 3.76"/><path d="M16.85 11.25a10 10 0 0 1 2.22 1.68"/><path d="M5 13a10 10 0 0 1 5.24-2.76"/><line x1="12" y1="20" x2="12.01" y2="20"/>',
+      codec_degradation: '<polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/>',
     };
     const icon = (k) => ICONS[k] ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[k]}</svg>` : "";
     // Polarity "None": informational only, never colored as a problem or flagged as an issue.
     const NO_POLARITY = new Set(["speaker_loudness", "speaker_reverb"]);
     // A metric is only named as the top issue when it is also clearly elevated.
     const MIN_EXPLANATION_VALUE = 0.30;
-    // Per-dimension green/yellow cutoffs for UI coloring (lower is better).
+    // Per-dimension green/yellow cutoffs for UI coloring (lower is better). The
+    // docs publish bands for the risk score only and recommend calibrating the
+    // rest on your own traffic, so these are demo defaults: codec_degradation
+    // takes the documented risk bands, the others are the demo's tuned values.
     const THRESHOLDS = {
       noise: [0.20, 0.45],
       interfering_speech: [0.15, 0.35],
-      media_speech: [0.20, 0.45],
       packet_loss: [0.05, 0.15],
+      codec_degradation: [0.30, 0.50],
       speaker_reverb: [0.25, 0.55],
       speaker_loudness: [0.12, 0.25],
     };
-    // Tyto Risk Score bands from the SDK docs: <0.35 good, 0.35–0.60 warn, >0.60 bad.
-    const COMPOSITE_TH = [0.35, 0.60];
-    const COMPOSITE_NUDGE = 0.60;   // boundary of the "bad" band, used for labelling
-    const COMPOSITE_CLEAR = 0.35;   // <  → episode considered over (hysteresis)
-    const SCORE_EMA_ALPHA = 0.5;    // smoothing of successive analyze() reads
+    // Tyto Risk Score bands from the SDK docs: <0.30 good, 0.30–0.50 warn, >0.50 bad.
+    const COMPOSITE_TH = [0.30, 0.50];
+    const COMPOSITE_NUDGE = 0.50;   // boundary of the "bad" band, used for labelling
+    const COMPOSITE_CLEAR = 0.30;   // <  → episode considered over (hysteresis)
+    const SCORE_EMA_ALPHA = 0.3;    // smoothing of successive analyze() reads (docs recommend 0.3)
     // Risk Score at/above which a nudge may fire (when a cause also dominates).
     // Decoupled from COMPOSITE_NUDGE so it can be tuned without shifting the bands.
     // Live-adjustable via the slider under the score bar.
-    const NUDGE_THRESHOLD_DEFAULT = 0.50, NUDGE_THRESHOLD_MIN = COMPOSITE_CLEAR, NUDGE_THRESHOLD_MAX = COMPOSITE_NUDGE;
+    const NUDGE_THRESHOLD_DEFAULT = 0.40, NUDGE_THRESHOLD_MIN = COMPOSITE_CLEAR, NUDGE_THRESHOLD_MAX = COMPOSITE_NUDGE;
     let nudgeThreshold = NUDGE_THRESHOLD_DEFAULT;
     const VAD_PROFILES = {
       eager: { type: "semantic_vad", eagerness: "auto", create_response: true, interrupt_response: true },
@@ -1086,43 +1106,58 @@
     const DESCRIPTIONS = {
       noise: "Ambient noise behind the speaker, relative to the speaker's level. High = the noise is loud compared to the speaker.",
       packet_loss: "Audio dropouts or discontinuities: packet loss, jitter, frame erasure, or CPU overload.",
-      interfering_speech: "Other live speakers audible in the audio: office, cafe, public place.",
-      media_speech: "TV, YouTube, radio, or a podcast playing in the background.",
+      interfering_speech: "Competing speech behind the main speaker: people nearby, or a TV, radio or phone playing.",
+      codec_degradation: "Compression artifacts from the codec carrying the audio: low bitrate, narrowband telephony, transcoding.",
       speaker_loudness: "Loudness level of the main speaker. Informational only.",
       speaker_reverb: "Low = dry, near-field audio; high = reverberant, far-field audio. Informational only.",
     };
 
-    // ── Decision layer (ported from the old Python tyto_monitor.py) ────────────────
+    // ── Decision layer (identical to the Python reference's decision.py) ──────────
     // `thr` is each dimension's red cutoff: the metric must be past it AND over
-    // MIN_EXPLANATION_VALUE to be named as the dominant cause.
+    // MIN_EXPLANATION_VALUE to be named as the dominant cause. `room` is the
+    // phrase for the Aware note and `advice` the standing instruction that goes
+    // with it, following the per-dimension real-time guidance in the Tyto docs.
+    //
+    // `text` (the spoken nudge) is null for causes the user cannot act on: a
+    // transport problem is still worth telling the agent about, but asking the
+    // speaker to fix it would be nonsense, so it never triggers a nudge.
     const EXPLANATIONS = [
       {
         key: "noise", thr: THRESHOLDS.noise[1],
         text: "Sorry, there is a lot of background noise. Could you move somewhere quieter?",
         room: "loud background noise",
+        advice: "Be patient with possible misunderstandings and confirm any critical details by repeating them back to the user.",
       },
       {
         key: "packet_loss", thr: THRESHOLDS.packet_loss[1],
         text: "Sorry, your connection seems unstable. Could you check it and try again?",
         room: "an unstable connection with audio dropouts",
+        advice: "Whole words may be missing, so confirm names, numbers and addresses by repeating them back, and allow longer pauses before assuming the user has finished.",
       },
       {
+        // Tyto 1.1 reports one interfering-speech dimension for live speakers and
+        // media alike, and the docs advise not naming a source we cannot identify.
         key: "interfering_speech", thr: THRESHOLDS.interfering_speech[1],
-        text: "Sorry, I may be picking up other voices. Could you make sure it is just you speaking?",
-        room: "other people speaking nearby",
+        text: "Sorry, I am hearing other voices in the background. Could you move somewhere quieter, or turn down anything playing nearby?",
+        room: "other voices in the background, either people nearby or something playing",
+        advice: "Those other voices can end up transcribed as the user, so confirm anything unexpected before acting on it.",
       },
       {
-        key: "media_speech", thr: THRESHOLDS.media_speech[1],
-        text: "Sorry, there seems to be a TV or music playing. Could you turn it down?",
-        room: "a TV or radio playing nearby",
+        key: "codec_degradation", thr: THRESHOLDS.codec_degradation[1],
+        text: null,   // transport problem: nothing the speaker can do about it
+        room: "heavy codec compression on the connection",
+        advice: "This one is in the transport, not the room, so never ask the user to change their surroundings; just confirm names, numbers and addresses by repeating them back.",
       },
     ];
-    const NOISY_KEYS = ["noise", "media_speech", "interfering_speech"];
+    const NOISY_KEYS = ["noise", "interfering_speech"];
     const NOISY_TRIP = 0.45;  // any of those over this → patient VAD
 
-    function strongestCause(m) {
+    // `actionableOnly` restricts the search to causes the user can do something
+    // about, which is what the Reactive layer needs.
+    function strongestCause(m, actionableOnly = false) {
       let best = null, bestSev = 0;
       for (const rule of EXPLANATIONS) {
+        if (actionableOnly && !rule.text) continue;
         const v = m[rule.key];
         if (typeof v !== "number" || v <= rule.thr || v < MIN_EXPLANATION_VALUE) continue;
         const sev = (v - rule.thr) / Math.max(1e-6, 1 - rule.thr);
@@ -1135,17 +1170,16 @@
       const cause = strongestCause(m);
       if (!cause) return "";  // no dominant cause: say nothing at all
       const severity = risk >= COMPOSITE_NUDGE ? "degraded" : risk >= COMPOSITE_TH[0] ? "marginal" : "borderline";
-      return `Audio note: ${severity} input, ${cause.room}. ` +
-        "Be patient with possible misunderstandings and confirm any critical " +
-        "details by repeating them back to the user.";
+      return `Audio note: ${severity} input, ${cause.room}. ${cause.advice}`;
     }
     function pickVadProfile(m) {
       if (!m) return "eager";
       return NOISY_KEYS.some(k => (m[k] || 0) >= NOISY_TRIP) ? "patient" : "eager";
     }
-    // Trips a nudge when the smoothed risk score is high AND a dominant cause has
-    // persisted `minPersist` consecutive scored chunks. No timers: after firing,
-    // the streak resets, so it takes another full run of bad chunks to re-fire.
+    // Trips a nudge when the smoothed risk score is high AND a dominant cause the
+    // user can act on has persisted `minPersist` consecutive scored chunks. No
+    // timers: after firing, the streak resets, so it takes another full run of bad
+    // chunks to re-fire.
     class EnvMonitor {
       constructor(minPersist = 1, threshold = nudgeThreshold) {
         this.minPersist = minPersist;
@@ -1156,7 +1190,7 @@
         const risk = m.risk_score ?? 0;
         if (risk < COMPOSITE_CLEAR) { this.streak = {}; return null; }
         // Nudge only with a certain reason: a red Risk Score alone never fires.
-        const cause = strongestCause(m);
+        const cause = strongestCause(m, true);
         if (!cause) { this.streak = {}; return null; }
         const k = cause.key;
         this.streak[k] = (this.streak[k] || 0) + 1;
@@ -1176,16 +1210,24 @@
       "audio will cause failures in downstream models (voice activity detection, turn-taking, " +
       "speech-to-text, speech-to-speech) — and why. It runs on CPU, on-premise, with no audio leaving " +
       "your infrastructure; in this demo it runs entirely in your browser via the ai-coustics WASM SDK, " +
-      "scoring your microphone live.\n" +
+      "scoring your microphone live. This demo runs Tyto 1.1, the current version: same 5 second windows " +
+      "of 16 kHz mono audio as the first release, but much smaller and faster (roughly 100 ms per window " +
+      "on a single CPU core and about 33 MB of memory), with better prediction of downstream failures.\n" +
       "• What it outputs: one Tyto Risk Score from 0 to 1 (higher means more likely to break downstream " +
-      "models; rough bands: under 0.35 is good, 0.35 to 0.60 is noticeable degradation, above 0.60 is " +
-      "severe), plus six dimensions that explain why: noise, speaker reverb, speaker loudness (a neutral " +
-      "level meter, not a problem), interfering speech, background media speech (a TV or radio), and packet loss.\n" +
+      "models; indicative bands: under 0.30 is good, 0.30 to 0.50 is noticeable degradation, above 0.50 is " +
+      "severe and worth intervening on), plus six dimensions that explain why: noise, speaker reverb, " +
+      "speaker loudness (a neutral level meter, not a problem), interfering speech (competing voices, " +
+      "whether live people nearby or a TV or radio playing), packet loss, and codec degradation " +
+      "(compression artifacts from a low-bitrate or narrowband codec carrying the call).\n" +
       "• Where you'd use it: any voice AI product where bad input audio breaks things — voice agents, " +
       "call centers, drive-throughs, IVR, consumer assistants. In real time the agent can adapt mid-call " +
-      "(warn the user, switch to manual turn-taking, disable barge-in, ask them to turn the TV down, or " +
-      "relax end-of-speech timeouts on packet loss). Offline you can score 100% of calls cheaply, triage " +
-      "the worst, attribute failures to audio versus agent logic, and track quality by device, carrier or campaign.\n" +
+      "(warn the user, switch to manual turn-taking, disable barge-in, ask them to quieten their " +
+      "surroundings, or relax end-of-speech timeouts on packet loss). Offline you can score 100% of calls " +
+      "cheaply, triage the worst, attribute failures to audio versus agent logic, and track quality by " +
+      "device, carrier or campaign.\n" +
+      "• Noise, interfering speech and reverb are things the speaker can usually fix; packet loss and codec " +
+      "degradation are transport problems, so there the right move is to confirm names, numbers and " +
+      "addresses rather than ask the user to change their room.\n" +
       "• This demo: real-time use — Tyto scores your mic and the agent adapts on three layers. Aware: it " +
       "factors your room into every reply. Tuned: it retunes turn-taking in noise. Reactive: it nudges you " +
       "when one issue dominates.\n" +
@@ -1321,7 +1363,7 @@
           this._send({
             type: "session.update", session: {
               type: "realtime", instructions,
-              audio: { input: { transcription: { model: "gpt-4o-mini-transcribe" }, turn_detection: turnDetection } },
+              audio: { input: { transcription: { model: "gpt-4o-transcribe" }, turn_detection: turnDetection } },
               tools, tool_choice: "auto",
             }
           });
@@ -1441,6 +1483,8 @@
       if (t.startsWith("tyto.nudge") || t.startsWith("tool.")) return "t-orange";
       if (t.startsWith("tyto.aware")) return "t-purple";
       if (t.startsWith("tyto.vad")) return "t-blue";
+      // A rejected transcription model only shows up per item, so make it loud.
+      if (t.includes("transcription.failed")) return "t-red";
       if (t.includes("transcript")) return "t-blue";
       if (t === "response.create" || t === "session.update") return "t-orange";
       if (t === "error" || t === "tyto.error") return "t-red";
@@ -1538,7 +1582,7 @@
     }
     function bucket(key, v) {
       if (NO_POLARITY.has(key)) return "green";
-      const th = THRESHOLDS[key] || [0.30, 0.60];
+      const th = THRESHOLDS[key] || [0.30, 0.50];
       return v < th[0] ? "green" : v < th[1] ? "yellow" : "red";
     }
     function compositeBucket(v) { return v < COMPOSITE_TH[0] ? "green" : v < COMPOSITE_TH[1] ? "yellow" : "red"; }
@@ -1583,7 +1627,7 @@
       for (const k of ENV_KEYS) {
         if (NO_POLARITY.has(k)) continue;
         const v = m[k]; if (typeof v !== "number" || v < MIN_EXPLANATION_VALUE) continue;
-        const th = THRESHOLDS[k] || [0.30, 0.60];
+        const th = THRESHOLDS[k] || [0.30, 0.50];
         const severity = Math.max(0, v - th[0]) / Math.max(1 - th[0], 1e-6);
         if (!best || severity > best.severity) best = { key: k, value: v, severity };
       }
@@ -1677,18 +1721,26 @@ registerProcessor("tap",Tap);`;
         sampleRate: TAP_RATE, hopMs: TYTO_HOP_MS, windowSeconds: TYTO_WINDOW_S,
       });
     }
-    // Audio-in is off while the agent speaks (mic muted, tap dropped), so only
+    // Tyto's input is off while the agent speaks (tap dropped; the mic itself is
+    // muted only around a nudge, so the user can still barge in), so only
     // score when the user's audio is actually flowing. Pausing the worker keeps
     // cause streaks frozen during agent speech instead of clearing them; on
-    // resume the analyzer resets and rewarms with a full window of fresh audio.
+    // resume the analyzer and the smoothing reset and rewarm with a full window
+    // of fresh audio.
     function syncWorkerGate() {
       const shouldScore = connected && listening && !agentSpeaking && !agentAudioPlaying;
       if (!tytoWorker || shouldScore === workerScoring) return;
       workerScoring = shouldScore;
       tytoWorker.postMessage({ type: shouldScore ? "resume" : "pause" });
+      // The docs ask to clear smoothing with the analyzer: an old average would
+      // re-trigger a nudge the user already fixed.
+      if (shouldScore) emaMetrics = null;
+      // A resume resets the analyzer, so there are no new scores until a fresh
+      // 5 s window is buffered. Say that instead of leaving the UI on "scoring".
+      if (shouldScore) setTytoState("warming", "re-warming — keep talking");
     }
     function onScores(raw, analyzeMs) {
-      if (!lastMetrics) setTytoState(null);   // first score in: Tyto is live
+      setTytoState(null);   // a score arrived: warm again, back to scoring
       emaMetrics = emaMetrics
         ? Object.fromEntries(Object.keys(raw).map(k => [k, SCORE_EMA_ALPHA * raw[k] + (1 - SCORE_EMA_ALPHA) * (emaMetrics[k] ?? raw[k])]))
         : { ...raw };
@@ -1801,7 +1853,7 @@ registerProcessor("tap",Tap);`;
         await startTytoWorker();
         await startTap(micStream);
         connected = true; $mic.classList.add("live"); setStatus("live", "Live");
-        log("tyto.loading", { message: "WASM SDK + tyto-l-16khz loading in worker…" });
+        log("tyto.loading", { message: "WASM SDK + tyto-1.1-l-16khz loading in worker…" });
       } catch (err) {
         setStatus("error", "Error"); log("error", { message: String(err) }); stop();
       }

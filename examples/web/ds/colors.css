@@ -1,0 +1,93 @@
+/* ============================================================
+   ai-coustics · Color tokens
+   ------------------------------------------------------------
+   Black and Off White are the primary surfaces. Blue 40 is the
+   main accent; Blue 50 carries CTAs and links. The secondary
+   palette (muted/bright pairs) is reserved for product lines,
+   feature labels, illustration, data-viz and icons — we use
+   the BRIGHT tone by default.
+   ============================================================ */
+
+:root {
+  /* — Core — */
+  --black: #0F0F0F;
+  --off-white: #F9F9F9;
+  --white: #FFFFFF;
+
+  /* — Neutral ramp — */
+  --off-black: #1A1919;   /* near-black surfaces */
+  --gray-80: #333333;
+  --gray-60: #666666;
+  --gray-40: #9A9A9A;     /* interpolated mid step */
+  --gray-20: #DEDEDE;
+  --gray-10: #ECECEC;     /* hairline / subtle fills */
+
+  /* — Accent · Blue — */
+  --blue-50: #006FFF;     /* CTAs, links */
+  --blue-40: #6993FF;     /* main brand accent */
+  --blue-20: #D1DEFF;
+  --blue-10: #EEF3FF;
+  --blue-60: #0056C7;     /* pressed / hover-dark for blue-50 */
+
+  /* — Secondary palette · muted / bright pairs — */
+  --teal-muted: #98DDCA;
+  --teal: #00BFA6;
+  --bluegray-muted: #A4BCC2;
+  --bluegray: #4890AF;
+  --lavender-muted: #CAB7D2;
+  --lavender: #B77DB8;
+  --clay-muted: #F0C8B2;
+  --clay: #E28C7C;
+  --amber-muted: #FFD38D;
+  --amber: #F4B942;
+
+  /* ---- Semantic aliases (light, the default) ---- */
+  --surface-page: var(--off-white);
+  --surface-card: var(--white);
+  --surface-sunken: var(--gray-10);
+  --surface-inverse: var(--black);
+
+  --text-primary: var(--black);
+  --text-secondary: var(--gray-60);
+  --text-tertiary: var(--gray-40);
+  --text-on-inverse: var(--off-white);
+  --text-on-accent: var(--white);
+  --text-link: var(--blue-50);
+
+  --border-subtle: var(--gray-20);
+  --border-strong: var(--gray-80);
+  --border-focus: var(--blue-50);
+
+  --accent: var(--blue-40);
+  --accent-strong: var(--blue-50);
+  --accent-pressed: var(--blue-60);
+  --accent-wash: var(--blue-10);
+
+  /* status — borrow from the palette, no new hues */
+  --status-positive: var(--teal);
+  --status-warning: var(--amber);
+  --status-critical: var(--clay);
+  --status-info: var(--blue-50);
+}
+
+/* ---- Inverse scope: black surfaces (footers, hero, app shell) ---- */
+.aic-inverse,
+[data-theme="inverse"] {
+  --surface-page: var(--black);
+  --surface-card: var(--off-black);
+  --surface-sunken: #050505;
+  --surface-inverse: var(--off-white);
+
+  --text-primary: var(--off-white);
+  --text-secondary: var(--gray-40);
+  --text-tertiary: var(--gray-60);
+  --text-on-inverse: var(--black);
+  --text-link: var(--blue-40);
+
+  --border-subtle: #2C2C2C;
+  --border-strong: var(--gray-60);
+
+  --accent: var(--blue-40);
+  --accent-strong: var(--blue-40);
+  --accent-wash: rgba(105, 147, 255, 0.16);
+}

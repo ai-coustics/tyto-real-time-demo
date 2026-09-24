@@ -1,0 +1,24 @@
+/* ============================================================
+   ai-coustics · Fonts
+   ------------------------------------------------------------
+   Milling (205TF) is the brand typeface — the wordmark is set
+   in it. We ship the single uploaded cut (Milling Duplex 1mm)
+   and use it for display headings, logo lockups and large
+   stat numerals.
+
+   SUBSTITUTIONS (flagged — see readme): we did not receive the
+   brand's body or mono fonts, so we pair Milling with:
+     · Hanken Grotesk  → body / UI text  (neutral grotesque,
+       subtly rounded to harmonise with Milling's terminals)
+     · Geist Mono      → code, telemetry, API payloads
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
+
+@font-face {
+  font-family: 'Milling';
+  src: url('../assets/fonts/Milling-Duplex1mm.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
