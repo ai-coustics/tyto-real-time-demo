@@ -12,6 +12,7 @@ venv/
 
 # Secrets and local config
 .env
+.env.local
 
 # Downloaded Tyto models
 models/
