@@ -7,45 +7,56 @@ from livekit.agents import (
     Agent, AgentServer, AgentSession, JobContext, JobProcess,
     cli, inference, llm, room_io,
 )
-from livekit.plugins import ai_coustics
+from ai_coustics.livekit import VAD, Analyzer, FrameProcessorChain, Model
 
 load_dotenv(".env.local")
 logger = logging.getLogger("aic-example")
 
-# A background podcast is speech, so it shows up mainly as interfering_speech.
-# noise catches intros, music beds and non-speech background audio.
-NOISE_THRESHOLD = 0.5
-INTERFERING_SPEECH_THRESHOLD = 0.5
-CONSECUTIVE_WINDOWS = 2  # 2 x 5s analysis windows = ~10s of sustained background audio
+# The Tyto risk score alone decides when to nudge. 0.5 is the start of Tyto's
+# "higher risk" band; a quiet room stays around 0.0-0.25.
+RISK_THRESHOLD = 0.5
+CONSECUTIVE_WINDOWS = 2  # 2 x 5s analysis windows = ~10s of sustained risky audio
 NUDGE_COOLDOWN = 60.0  # seconds between nudges
 
-NUDGE_INSTRUCTIONS = (
-    "The user's microphone is picking up other people talking in the background, "
-    "probably a podcast or video playing nearby. Briefly and politely ask them to pause "
-    "it or turn it down so you can hear them clearly, then continue where you left off. "
-    "Ignore any recent user messages that sound like podcast content rather than the user."
-)
+# The highest of these scores only picks the wording of the nudge, it never triggers one.
+CAUSES = {
+    "interfering_speech": "other people talking in the background, probably a podcast or "
+    "video playing nearby. Ask them to pause it or turn it down",
+    "noise": "a lot of background noise. Ask them to move somewhere quieter or reduce the noise",
+    "speaker_reverb": "an echo, as if they are far from the microphone. Ask them to move closer to it",
+    "packet_loss": "a choppy connection. Ask them to check their network",
+    "codec_degradation": "a poor quality connection. Ask them to check their network",
+}
+
+
+def nudge_instructions(result) -> str:
+    cause = max(CAUSES, key=lambda name: getattr(result, name))
+    return (
+        f"The user's audio is hard to understand: it has {CAUSES[cause]}. Be brief and "
+        "polite, then continue where you left off. Ignore any recent user messages that "
+        "sound like background content rather than the user."
+    )
 
 
 class AssistantAgent(Agent):
     def __init__(self) -> None:
         super().__init__(instructions="You are a helpful voice assistant. Keep replies brief.")
-        self.nudge_pending = False
+        self.pending_nudge: str | None = None
 
     async def on_user_turn_completed(
         self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
     ) -> None:
         # The user spoke before an idle moment came up: fold the nudge into this reply.
-        if self.nudge_pending:
-            turn_ctx.add_message(role="system", content=NUDGE_INSTRUCTIONS)
-            self.nudge_pending = False
+        if self.pending_nudge:
+            turn_ctx.add_message(role="system", content=self.pending_nudge)
+            self.pending_nudge = None
 
 
 def setup(proc: JobProcess):
-    proc.userdata["vad_model"] = ai_coustics.Model.from_file(
+    proc.userdata["vad_model"] = Model.from_file(
         "models/vad.aicmodel"
     )
-    proc.userdata["analysis_model"] = ai_coustics.Model.from_file(
+    proc.userdata["analysis_model"] = Model.from_file(
         "models/tyto.aicmodel"
     )
 
@@ -59,18 +70,18 @@ async def entrypoint(ctx: JobContext):
     if not key:
         raise RuntimeError("Set AIC_SDK_LICENSE in .env.local and restart the agent")
 
-    vad = ai_coustics.VAD(model=ctx.proc.userdata["vad_model"], license_key=key)
+    vad = VAD(model=ctx.proc.userdata["vad_model"], license_key=key)
 
     @vad.on("metrics_collected")
     def on_vad_metrics(metrics):
         logger.info("AIC VAD inference count: %s", metrics.inference_count)
 
-    analyzer = ai_coustics.Analyzer(
+    analyzer = Analyzer(
         model=ctx.proc.userdata["analysis_model"],
         analysis_interval=5.0,
     )
 
-    frame_processor = ai_coustics.FrameProcessorChain(vad.processor, analyzer.collector)
+    frame_processor = FrameProcessorChain(vad.processor, analyzer.collector)
 
     session = AgentSession(
         vad=vad,
@@ -80,37 +91,37 @@ async def entrypoint(ctx: JobContext):
     )
     agent = AssistantAgent()
 
-    noisy_windows = 0
+    risky_windows = 0
     last_nudge = 0.0
 
     @analyzer.on("analysis_result")
     def on_analysis(event):
-        nonlocal noisy_windows, last_nudge
+        nonlocal risky_windows, last_nudge
         result = event.result
         logger.info(
-            "Tyto risk=%.2f noise=%.2f interfering_speech=%.2f",
+            "Tyto risk=%.2f noise=%.2f interfering_speech=%.2f reverb=%.2f "
+            "packet_loss=%.2f codec=%.2f",
             result.risk_score, result.noise, result.interfering_speech,
+            result.speaker_reverb, result.packet_loss, result.codec_degradation,
         )
 
-        noisy = (
-            result.noise > NOISE_THRESHOLD
-            or result.interfering_speech > INTERFERING_SPEECH_THRESHOLD
-        )
-        noisy_windows = noisy_windows + 1 if noisy else 0
-        if noisy_windows < CONSECUTIVE_WINDOWS or agent.nudge_pending:
+        risky = result.risk_score > RISK_THRESHOLD
+        risky_windows = risky_windows + 1 if risky else 0
+        if risky_windows < CONSECUTIVE_WINDOWS or agent.pending_nudge:
             return
         if time.monotonic() - last_nudge < NUDGE_COOLDOWN:
             return
 
-        noisy_windows = 0
+        risky_windows = 0
         last_nudge = time.monotonic()
+        instructions = nudge_instructions(result)
         if session.agent_state == "listening":
-            # The podcast keeps VAD (and user_state) in "speaking", so don't wait for
-            # silence. Disable interruptions or the podcast itself would cut the nudge off.
-            session.generate_reply(instructions=NUDGE_INSTRUCTIONS, allow_interruptions=False)
+            # Background audio keeps VAD (and user_state) in "speaking", so don't wait for
+            # silence. Disable interruptions or the background audio would cut the nudge off.
+            session.generate_reply(instructions=instructions, allow_interruptions=False)
         else:
             # The agent is mid-reply: fold the nudge into the next one instead.
-            agent.nudge_pending = True
+            agent.pending_nudge = instructions
 
     await session.start(
         agent=agent,
