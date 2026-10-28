@@ -66,7 +66,7 @@ Use this logic (match the user's code style):
 
 ## 6. Verify
 
-- Run `python agent.py dev` (or `lk agent dev` with the LiveKit CLI), then open your project's Agents dashboard, pick `aic-vad-demo` and click Launch Console. Agent Console joins a real room, so audio goes through RoomIO and the collector. Needs `livekit-agents` 1.5.2 or later.
+- Run `python agent.py dev` (or `lk agent dev` with the LiveKit CLI), then open your project's Agents dashboard, pick `aic-tyto-demo` and click Launch Console. Agent Console joins a real room, so audio goes through RoomIO and the collector. Needs `livekit-agents` 1.5.2 or later.
 - Do not use CLI `console` mode (`python agent.py console`): it skips RoomIO, so Tyto gets no audio there. Agent Console (browser) and console mode (terminal) are different tools.
 - Use the Console's Audio pane to confirm your mic reaches the agent and the Events pane to see the nudge reply. Tyto scores are in the worker logs, not in the Console.
 - About 5 s after you start talking, `Tyto risk=...` lines appear every 5 s. No lines means the collector is not in RoomIO.

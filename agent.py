@@ -64,7 +64,7 @@ def setup(proc: JobProcess):
 server = AgentServer(setup_fnc=setup)
 
 
-@server.rtc_session(agent_name="aic-vad-demo")
+@server.rtc_session(agent_name="aic-tyto-demo")
 async def entrypoint(ctx: JobContext):
     key = os.environ.get("AIC_SDK_LICENSE", "").strip()
     if not key:

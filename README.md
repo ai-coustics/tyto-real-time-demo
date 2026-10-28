@@ -44,7 +44,9 @@ Download the models:
 .venv/bin/python agent.py dev
 ```
 
-In your LiveKit Cloud project, open Agents, pick `aic-vad-demo` and click Launch Console. Do not use `agent.py console`: it skips RoomIO, so Tyto gets no audio.
+Then join from the LiveKit Agent Console and dispatch the agent by the name set in `agent.py` (`agent_name="aic-tyto-demo"`, change it to anything you like). The agent only joins rooms it is dispatched to by that name.
+
+Do not use `agent.py console`: it skips RoomIO, so Tyto gets no audio.
 
 ## What to expect
 
