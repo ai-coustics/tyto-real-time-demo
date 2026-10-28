@@ -78,6 +78,7 @@ async def entrypoint(ctx: JobContext):
 
     analyzer = Analyzer(
         model=ctx.proc.userdata["analysis_model"],
+        license_key=key,
         analysis_interval=5.0,
     )
 

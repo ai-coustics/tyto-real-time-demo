@@ -22,8 +22,8 @@ Source of truth: https://docs.ai-coustics.com/models/get-started/livekit-quickst
 
 Pinned versions known to work together:
 
-- Python 3.11: `ai-coustics-livekit-extras==0.25.0`, `aic-sdk==3.3.0`, `livekit-agents==1.8.2`
-- Node 24: `@ai-coustics/livekit-extras@0.25.0`, `@ai-coustics/aic-sdk@0.25.0`, `@livekit/agents@1.9.0`
+- Python 3.11: `ai-coustics-livekit-extras==0.25.2`, `aic-sdk==3.3.2`, `livekit-agents==1.8.2`
+- Node 24: `@ai-coustics/livekit-extras@0.25.2`, `@ai-coustics/aic-sdk@0.25.2`, `@livekit/agents@1.9.0`
 
 Add `AIC_SDK_LICENSE` to the env file the project already loads (key from https://developers.ai-coustics.com/). Never hardcode it or put it in client code.
 
@@ -39,7 +39,7 @@ python -c 'from aic_sdk import Model; from shutil import copyfile; copyfile(Mode
 Import: `from ai_coustics.livekit import VAD, Analyzer, FrameProcessorChain, Model` (Node: `@ai-coustics/livekit-extras`).
 
 1. Load the model once per worker in `setup`: `proc.userdata["analysis_model"] = Model.from_file("models/tyto.aicmodel")`.
-2. Per room, create `Analyzer(model=..., analysis_interval=5.0)` and chain its collector with the VAD: `FrameProcessorChain(vad.processor, analyzer.collector)`, passed as `noise_cancellation=` in `room_io.AudioInputOptions(sample_rate=16000, num_channels=1, ...)`.
+2. Per room, create `Analyzer(model=..., license_key=key, analysis_interval=5.0)` and chain its collector with the VAD: `FrameProcessorChain(vad.processor, analyzer.collector)`, passed as `noise_cancellation=` in `room_io.AudioInputOptions(sample_rate=16000, num_channels=1, ...)`.
 
 Rules:
 
