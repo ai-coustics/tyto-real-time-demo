@@ -18,3 +18,5 @@ venv/
 models/
 *.aicmodel
 .claude/
+# Call recordings
+recordings/

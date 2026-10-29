@@ -1,5 +1,7 @@
 import os
 import time
+import wave
+from datetime import datetime
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -11,6 +13,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
 from pipecat.services.deepgram.flux.stt import DeepgramFluxSTTService
@@ -81,6 +84,9 @@ async def bot(runner_args: RunnerArguments):
 
     tyto = AICTytoObserver(license_key=key, degraded_threshold=DEGRADED_THRESHOLD)
 
+    # Records the call in stereo: the user's raw mic (what Tyto scores) left, the bot right.
+    recorder = AudioBufferProcessor(num_channels=2, auto_start_recording=True)
+
     context = LLMContext()
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(context)
 
@@ -92,6 +98,7 @@ async def bot(runner_args: RunnerArguments):
             llm,
             tts,
             transport.output(),
+            recorder,
             assistant_aggregator,
         ]
     )
@@ -154,6 +161,17 @@ async def bot(runner_args: RunnerArguments):
             f"largest degradation: {summary.dominant_dimension}, flagged={flagged}"
         )
 
+    @recorder.event_handler("on_audio_data")
+    async def on_audio_data(buffer, audio, sample_rate, num_channels):
+        os.makedirs("recordings", exist_ok=True)
+        path = f"recordings/{datetime.now():%Y%m%d-%H%M%S}.wav"
+        with wave.open(path, "wb") as f:
+            f.setnchannels(num_channels)
+            f.setsampwidth(2)
+            f.setframerate(sample_rate)
+            f.writeframes(audio)
+        logger.info(f"Saved recording: {path}")
+
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         context.add_message({"role": "developer", "content": "Greet the user briefly."})
@@ -161,6 +179,7 @@ async def bot(runner_args: RunnerArguments):
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
+        await recorder.stop_recording()  # writes the recording before the pipeline stops
         await runner.cancel()
 
     await runner.run()

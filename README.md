@@ -48,6 +48,7 @@ Open http://localhost:7860, allow the mic and click Connect.
 - When the smoothed risk (a moving average, so one bad second does not count) goes above 0.4, the bot asks you to fix the top cause, then waits 60 s before asking again. If it is mid-reply, it stops and asks right away. Background audio cannot interrupt that line.
 - Each score also shows up in the browser client's Events pane as a server message.
 - When you disconnect, it logs `Tyto call summary ... flagged=True` if 20% or more of the call had a risk of 0.3 or more.
+- Each call is saved to `recordings/<date-time>.wav` on disconnect: your raw mic (what Tyto scored) on the left, the bot on the right.
 - Tune `RISK_THRESHOLD`, `SMOOTHING`, `ANALYSIS_HOP`, `NUDGE_COOLDOWN`, `DEGRADED_THRESHOLD` and `FLAG_FRACTION` in `bot.py`.
 
 ## Coding agents
