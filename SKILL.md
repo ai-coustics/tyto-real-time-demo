@@ -14,7 +14,7 @@ Source of truth: https://docs.ai-coustics.com/models/audio-insight/real-time-ana
 ## 1. Check the project first
 
 - Find the `Pipeline`, the `PipelineWorker` (or older `PipelineTask`) and the context aggregators. Note the `pipecat-ai` version. Below 1.15.0 there is no `AICTytoObserver`: ask the user before upgrading.
-- Keep the user's existing transport, STT, LLM and TTS services and system prompt.
+- Keep the user's existing transport, services and system prompt. Note whether the bot is a cascade (STT, LLM, TTS) or a speech-to-speech service such as `OpenAILiveLLMService` (GPT-Live 1); the nudge in step 5 differs.
 - If the transport uses `AICFilter` as `audio_in_filter`, pass the same filter as `audio_filter=` to the observer so Tyto scores the audio before enhancement. Without a filter, the observer scores the transport's `InputAudioRawFrame` audio.
 
 ## 2. Install and provision
@@ -45,12 +45,12 @@ Rules:
 ## 5. React: nudge the caller
 
 - The Tyto `risk_score` is the ONLY trigger. Do not trigger on a single dimension.
-- Constants: `RISK_THRESHOLD = 0.5` (start of Tyto's "higher risk" band; a quiet room stays around 0.0 to 0.25), `CONSECUTIVE_WINDOWS = 2` (about 10 s), `NUDGE_COOLDOWN = 60.0` seconds.
+- Constants: `RISK_THRESHOLD = 0.5` (start of Tyto's "higher risk" band; a quiet room stays around 0.0 to 0.25), `CONSECUTIVE_WINDOWS = 2` (about 10 s; 1 is fine for demos), `NUDGE_COOLDOWN = 60.0` seconds.
 - Count consecutive windows with `risk_score > RISK_THRESHOLD`; reset on a window below it. Act only at `CONSECUTIVE_WINDOWS`, outside the cooldown, and when no nudge is pending.
-- Wording only: pick the highest of `interfering_speech`, `noise`, `speaker_reverb`, `packet_loss`, `codec_degradation` and speak a fixed line for it (pause the podcast, move somewhere quieter, move closer to the mic, check the connection). Skip `speaker_loudness`; higher is not worse.
-- Speak it as a `TTSSpeakFrame(text)` with `frame.interruptible = False` (set after construction, it is not an init argument). Background audio keeps the VAD in "speaking" and would cut an interruptible nudge off.
-- If the bot is mid-reply, hold the frame and queue it on the assistant aggregator's `on_assistant_turn_stopped`. Track the reply with `on_assistant_turn_started` / `on_assistant_turn_stopped(aggregator, message)`. Otherwise `await worker.queue_frames([frame])`.
-- Keep state (counter, last nudge time, pending frame) inside `bot()`, never at module level.
+- Wording only: pick the highest of `interfering_speech`, `noise`, `speaker_reverb`, `packet_loss`, `codec_degradation` and phrase the ask for it (pause the podcast, move somewhere quieter, move closer to the mic, check the connection). Skip `speaker_loudness`; higher is not worse.
+- Speech-to-speech (GPT-Live 1, `OpenAILiveLLMService`): send the cause and the ask as commentary, `await llm.send_client_event(SessionCommentaryAppendEvent(delegation_id=None, content=...))` (from `pipecat.services.openai.live.events`). The model says it in its own words when it fits, and handles being talked over itself, so no pending or mid-reply logic is needed. Do not use `LLMMessagesAppendFrame`: in 1.15.0 the Live service does not forward developer messages appended mid-session. Also tell it to ignore recent speech that sounds like background content.
+- Cascade (STT, LLM, TTS): speak a fixed line as `TTSSpeakFrame(text)` with `frame.interruptible = False` (set after construction, it is not an init argument), or background audio keeps the VAD in "speaking" and cuts the nudge off. If the bot is mid-reply, hold the frame and queue it on the assistant aggregator's `on_assistant_turn_stopped`, tracking the reply with `on_assistant_turn_started`. Otherwise `await worker.queue_frames([frame])`.
+- Keep state (counter, last nudge time and, in a cascade, the pending frame) inside `bot()`, never at module level.
 
 ## 6. Flag the call
 
