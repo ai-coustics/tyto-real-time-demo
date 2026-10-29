@@ -1,6 +1,6 @@
 # Tyto in Pipecat
 
-A Pipecat voice bot (Deepgram Flux STT, OpenAI gpt-5-mini, Deepgram Aura-2 TTS) that scores the caller's audio with Tyto every 5 s and asks the caller to fix it when the audio is likely to break the pipeline (background podcast, noise, echo, bad connection). At the end of the call it logs a summary and flags calls with bad audio.
+A Pipecat voice bot (Deepgram Flux STT, OpenAI gpt-5-mini, Deepgram Aura-2 TTS) that scores the caller's audio with Tyto every second and asks the caller to fix it when the audio is likely to break the pipeline (background podcast, noise, echo, bad connection). At the end of the call it logs a summary and flags calls with bad audio.
 
 Built on the official Pipecat ai-coustics integration (`AICTytoObserver`, Pipecat 1.15.0 and later).
 
@@ -44,11 +44,11 @@ Open http://localhost:7860, allow the mic and click Connect.
 
 ## What to expect
 
-- About 5 s after you connect, the bot logs a `Tyto risk=...` line every 5 s.
-- When a window's `risk` is above 0.4, the bot asks you to fix the top cause, then waits 60 s before asking again. If it is mid-reply, it asks right after. Background audio cannot interrupt that line.
+- From about 1 s after you connect, the bot logs a `Tyto ... risk=... smoothed=... -> decision` line every second. Each one scores the latest 5 s of audio.
+- When the smoothed risk (a moving average, so one bad second does not count) goes above 0.4, the bot asks you to fix the top cause, then waits 60 s before asking again. If it is mid-reply, it stops and asks right away. Background audio cannot interrupt that line.
 - Each score also shows up in the browser client's Events pane as a server message.
 - When you disconnect, it logs `Tyto call summary ... flagged=True` if 20% or more of the call had a risk of 0.3 or more.
-- Tune `RISK_THRESHOLD`, `CONSECUTIVE_WINDOWS`, `NUDGE_COOLDOWN`, `DEGRADED_THRESHOLD` and `FLAG_FRACTION` in `bot.py`.
+- Tune `RISK_THRESHOLD`, `SMOOTHING`, `ANALYSIS_HOP`, `NUDGE_COOLDOWN`, `DEGRADED_THRESHOLD` and `FLAG_FRACTION` in `bot.py`.
 
 ## Coding agents
 

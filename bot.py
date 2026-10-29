@@ -4,7 +4,8 @@ import time
 from dotenv import load_dotenv
 from loguru import logger
 
-from pipecat.frames.frames import LLMRunFrame, TTSSpeakFrame
+from pipecat.frames.frames import InterruptionFrame, LLMRunFrame, TTSSpeakFrame
+from pipecat.observers import aic_tyto_observer
 from pipecat.observers.aic_tyto_observer import AICTytoObserver
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineWorker
@@ -22,9 +23,14 @@ load_dotenv(".env.local")
 
 # The Tyto risk score alone decides when to nudge. 0.5 is the start of Tyto's
 # "higher risk" band; a quiet room stays around 0.0-0.25.
-RISK_THRESHOLD = 0.4
-CONSECUTIVE_WINDOWS = 2 # 2 x 5s analysis windows = ~10s of sustained risky audio
+RISK_THRESHOLD = 0.4  # compared against the smoothed risk
+SMOOTHING = 0.7  # weight of the newest score in the moving average; lower is smoother
+ANALYSIS_HOP = 1.0  # seconds between scores of the rolling 5 s window
 NUDGE_COOLDOWN = 60.0  # seconds between nudges
+
+# Pipecat 1.15.0 scores every 5 s and has no option to change that, so this overrides
+# the observer's private interval. Tyto still scores the latest 5 s, just every second.
+aic_tyto_observer._TYTO_WINDOW_SECS = ANALYSIS_HOP
 
 # After the call: flag it when 20% or more of its windows had a risk of 0.3 or more.
 DEGRADED_THRESHOLD = 0.3
@@ -97,42 +103,46 @@ async def bot(runner_args: RunnerArguments):
     runner = WorkerRunner(handle_sigint=runner_args.handle_sigint)
     await runner.add_workers(worker)
 
-    risky_windows = 0
+    smoothed_risk = 0.0
     last_nudge = 0.0
-    replying = False
-    pending_nudge: TTSSpeakFrame | None = None
 
     @tyto.event_handler("on_analysis_result")
     async def on_analysis_result(observer, scores, audio_secs):
-        nonlocal risky_windows, last_nudge, pending_nudge
-        risky = scores.risk_score > RISK_THRESHOLD
-        risky_windows = risky_windows + 1 if risky else 0
+        nonlocal smoothed_risk, last_nudge
+        # A moving average, so one risky second does not trigger a nudge on its own.
+        smoothed_risk = SMOOTHING * scores.risk_score + (1 - SMOOTHING) * smoothed_risk
         cause = top_cause(scores)
+        cooldown_left = NUDGE_COOLDOWN - (time.monotonic() - last_nudge)
+        if smoothed_risk <= RISK_THRESHOLD:
+            decision = "ok"
+        elif cooldown_left > 0:
+            decision = f"cooldown ({cooldown_left:.0f}s left)"
+        else:
+            decision = f"nudge ({cause})"
+
         logger.info(
             f"Tyto {audio_secs:.0f}s risk={scores.risk_score:.2f} "
-            f"(risky {risky_windows}/{CONSECUTIVE_WINDOWS}, top={cause}) "
+            f"smoothed={smoothed_risk:.2f} -> {decision} "
             f"noise={scores.noise:.2f} interfering_speech={scores.interfering_speech:.2f} "
             f"reverb={scores.speaker_reverb:.2f} packet_loss={scores.packet_loss:.2f} "
             f"codec={scores.codec_degradation:.2f}"
         )
         # Shows up as a server message in the Events pane of the browser client.
-        await worker.rtvi.send_server_message({"tyto": scores.model_dump(), "audio_secs": audio_secs})
-
-        if risky_windows < CONSECUTIVE_WINDOWS or pending_nudge:
+        await worker.rtvi.send_server_message(
+            {
+                "tyto": scores.model_dump(),
+                "smoothed_risk": smoothed_risk,
+                "audio_secs": audio_secs,
+                "decision": decision,
+            }
+        )
+        if not decision.startswith("nudge"):
             return
-        cooldown_left = NUDGE_COOLDOWN - (time.monotonic() - last_nudge)
-        if cooldown_left > 0:
-            logger.info(f"Tyto nudge skipped: cooldown, {cooldown_left:.0f}s left")
-            return
 
-        risky_windows = 0
         last_nudge = time.monotonic()
-        logger.info(f"Tyto nudge: {cause}")
-        if replying:
-            # The bot is mid-reply: speak the nudge once it finishes.
-            pending_nudge = nudge_frame(cause)
-        else:
-            await worker.queue_frames([nudge_frame(cause)])
+        # Barge in right away: cut off any reply in progress (likely an answer to the
+        # background audio) and speak the nudge, even if the user is still speaking.
+        await worker.queue_frames([InterruptionFrame(), nudge_frame(cause)])
 
     @tyto.event_handler("on_call_summary")
     async def on_call_summary(observer, summary):
@@ -143,19 +153,6 @@ async def bot(runner_args: RunnerArguments):
             f"{summary.degraded_fraction:.0%} degraded, "
             f"largest degradation: {summary.dominant_dimension}, flagged={flagged}"
         )
-
-    @assistant_aggregator.event_handler("on_assistant_turn_started")
-    async def on_assistant_turn_started(aggregator):
-        nonlocal replying
-        replying = True
-
-    @assistant_aggregator.event_handler("on_assistant_turn_stopped")
-    async def on_assistant_turn_stopped(aggregator, message):
-        nonlocal replying, pending_nudge
-        replying = False
-        if pending_nudge:
-            await worker.queue_frames([pending_nudge])
-            pending_nudge = None
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
