@@ -29,10 +29,10 @@ from dataclasses import dataclass, fields
 # Scoring contract                                                            #
 # --------------------------------------------------------------------------- #
 
-# The six explanatory dimensions Tyto 1.1 returns, in the docs' display order.
+# The six explanatory dimensions Tyto returns, in the docs' display order.
 # Tyto 1.1 merged the old ``media_speech`` into ``interfering_speech`` (any
 # competing speech, live or from a TV / radio / phone) and added
-# ``codec_degradation``.
+# ``codec_degradation``; Tyto 1.2 keeps the same six.
 ENV_KEYS = (
     "noise",
     "speaker_reverb",
@@ -54,8 +54,8 @@ LABELS = {
 # Tuned constants. Keep these identical across branches for comparability.
 WINDOW_SECONDS = 5.0  # Tyto's analysis window is fixed at 5 s by the model.
 # How often we slide that window and read a new score (UI + decision cadence).
-# Tyto 1.1 analyses a window in about 100 ms, roughly a quarter of what 1.0
-# needed, so a 1 s hop costs ~10% of one core and the UI moves visibly.
+# Tyto 1.2 analyses a window in about 110 ms (1.1 was about 135 ms on the same
+# machine), so a 1 s hop costs ~10% of one core and the UI moves visibly.
 HOP_SECONDS = 1.0
 # Smoothing of successive analyze() reads; the docs recommend 0.3. Note that 0.3
 # at a 1 s hop takes about as long to cross the nudge gate as the old 0.5 at a
@@ -194,7 +194,7 @@ EXPLANATIONS = (
         ),
     },
     {
-        # Tyto 1.1 reports one interfering-speech dimension for live speakers and
+        # Tyto reports one interfering-speech dimension for live speakers and
         # media alike, and the docs advise not naming a source we cannot identify.
         "key": "interfering_speech",
         "thr": THRESHOLDS["interfering_speech"][1],

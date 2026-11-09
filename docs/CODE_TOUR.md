@@ -20,7 +20,7 @@ and the **analyzer** scores the latest 5 second window on a worker thread.
 ```python
 import aic_sdk as aic
 
-model = aic.Model.from_file(aic.Model.download("tyto-1.1-l-16khz", "./models"))
+model = aic.Model.from_file(aic.Model.download("tyto-1.2-l-16khz", "./models"))
 collector, analyzer = aic.analyzer_pair(model, license_key)
 config = aic.ProcessorConfig.optimal(model, sample_rate=24000)
 collector.initialize(config)

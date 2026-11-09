@@ -6,9 +6,9 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 dependencies = [
-    # 3.x is required: Tyto 1.1 is a model-version-7 artifact and the streaming
-    # analyzer API changed (mono buffers, block_size, codec_degradation).
-    "aic-sdk>=3.2",
+    # Pinned with the model id: Tyto 1.2 is a model-file-version-8 artifact that
+    # 3.3.x and earlier reject, and 3.4.0 (core 0.26.0) can no longer load 1.1.
+    "aic-sdk==3.4.0",
     "numpy>=1.24",
     "sounddevice>=0.4",
 ]

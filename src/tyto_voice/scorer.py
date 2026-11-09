@@ -34,9 +34,9 @@ import numpy as np
 from .decision import HOP_SECONDS, SCORE_EMA_ALPHA, WINDOW_SECONDS, Scores
 
 # Model published on the ai-coustics artifact CDN. Same model as the browser
-# demo (Tyto 1.1), so scores are comparable. Needs aic-sdk 3.x: Tyto 1.1 ships as
-# model version 7 and older SDKs refuse it.
-DEFAULT_MODEL = "tyto-1.1-l-16khz"
+# demo (Tyto 1.2), so scores are comparable. Needs aic-sdk 3.4.0: Tyto 1.2 ships
+# as model file version 8, which older SDKs refuse.
+DEFAULT_MODEL = "tyto-1.2-l-16khz"
 
 ScoresCallback = Callable[[Scores], None]
 StateCallback = Callable[[str, str], None]  # (state, human_text)

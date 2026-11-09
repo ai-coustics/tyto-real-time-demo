@@ -22,12 +22,15 @@ Tyto returns, per fixed 5 second window: a **risk_score** (0..1, higher is
 worse) and six dimensions (`noise`, `speaker_reverb`, `speaker_loudness`,
 `interfering_speech`, `packet_loss`, `codec_degradation`).
 
-The current model is **Tyto 1.1** (`tyto-1.1-l-16khz`, model version 7), which
-needs aic-sdk 3.x on the Python side and `@ai-coustics/aic-sdk-wasm` 0.23.x in
-the browser. Coming from Tyto 1.0: the old `media_speech` dimension is folded
-into `interfering_speech` (competing speech, live or from a device),
-`codec_degradation` is new, and the risk score is recalibrated, so the docs'
-bands moved to <0.30 good / 0.30-0.50 warn / >0.50 bad.
+The current model is **Tyto 1.2** (`tyto-1.2-l-16khz`, model file version 8),
+which needs `aic-sdk==3.4.0` (core 0.26.0) on the Python side and
+`@ai-coustics/aic-sdk-wasm` 0.26.0 in the browser. The SDK pin and the model id
+move together: 3.4.0 cannot load 1.1, and 3.3.x cannot load 1.2. Tyto 1.2 keeps
+1.1's six dimensions, result fields and risk bands (<0.30 good / 0.30-0.50
+warn / >0.50 bad), but every score moved, so re-check the demo's own
+thresholds on real audio after any model change. (Tyto 1.1 folded the old
+`media_speech` dimension into `interfering_speech` and added
+`codec_degradation`.)
 
 ## Architecture and data flow
 
@@ -161,11 +164,11 @@ casually.
   or a 6 s cap. Do not "fix" this by trusting the model to stop: measured live,
   it finishes its sentence (3 to 4 s) before it speaks a commentary.
 
-## aic-sdk quick reference (verified against aic-sdk 3.1.0, core 0.23.0)
+## aic-sdk quick reference (verified against aic-sdk 3.4.0, core 0.26.0)
 
 ```python
 import aic_sdk as aic
-path = aic.Model.download("tyto-1.1-l-16khz", "./models")  # CDN, cached
+path = aic.Model.download("tyto-1.2-l-16khz", "./models")  # CDN, cached
 model = aic.Model.from_file(path)
 # streaming (live):
 collector, analyzer = aic.analyzer_pair(model, license_key)
@@ -182,8 +185,9 @@ What changed from the 2.x API this repo used before (all of it applies here):
 `num_frames` -> `block_size`, `ProcessorConfig` has no `num_channels` and
 buffers are 1D mono, `media_speech` -> `codec_degradation`,
 `get_optimal_num_frames` -> `get_optimal_block_size`, and the analyzer gained
-`terminate_session()`. Model ids are dotted (`tyto-1.1-l-16khz`) even though the
-CDN path is dashed.
+`terminate_session()`. Model ids are dotted (`tyto-1.2-l-16khz`) even though the
+CDN path is dashed. 3.4.0 changed nothing in this API; the browser's 0.26 WASM
+SDK renamed only Processor/Vad context getters, which the worker does not use.
 
 This demo is real-time only. (`aic.FileAnalyzer(model, key).analyze(...)` exists
 for offline batch scoring, but it is intentionally not part of this demo.)

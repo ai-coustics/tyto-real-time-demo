@@ -12,7 +12,7 @@ const $ = (id) => document.getElementById(id);
 const SAMPLE_RATE = 24000;       // PCM16 mono, matches the backend and OpenAI
 const MIC_CHUNK = 480;           // ~20 ms batches sent to the backend
 
-// The six Tyto 1.1 dimensions and their thresholds mirror src/tyto_voice/decision.py.
+// The six Tyto dimensions (unchanged from 1.1 to 1.2) and their thresholds mirror src/tyto_voice/decision.py.
 const ENV_KEYS = ["noise", "speaker_reverb", "speaker_loudness", "interfering_speech", "packet_loss", "codec_degradation"];
 const SHORT = {
   noise: "Noise", speaker_reverb: "Reverb", speaker_loudness: "Loudness",
@@ -284,7 +284,7 @@ function onMessage(ev) {
       break;
     case "config":
       $("models-val").textContent = m.backend.startsWith("gpt-live") ? "GPT-Live 1" : m.backend;
-      $("models-sub").textContent = `scored by Tyto 1.1` + (m.judge ? ` · judged by Jev` : "");
+      $("models-sub").textContent = `scored by Tyto 1.2` + (m.judge ? ` · judged by Jev` : "");
       setJudge(m.judge ? "Ready" : "Rule", m.judge ? "Jev picks the agent's move when audio gets bad" : "no Jev key: a fixed rule asks you to fix it");
       log("config", `voice ${m.backend}, judge ${m.judge || "off"}`); break;
     case "tyto_state":
