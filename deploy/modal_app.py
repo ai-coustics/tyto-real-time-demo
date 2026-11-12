@@ -45,7 +45,7 @@ APP_NAME = os.environ.get("MODAL_APP_NAME", "tyto-demo")
 
 # Where the Tyto model lives inside the image.
 MODELS_DIR = "/models"
-TYTO_MODEL = "tyto-1.1-l-16khz"
+TYTO_MODEL = "tyto-1.2-l-16khz"
 
 # The public URL is derived from the app name and this label, NOT from the name
 # of the Python function. Pin it, or renaming the function silently moves the URL.
@@ -74,11 +74,12 @@ def _bake_model() -> None:
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    # Same floors as pyproject.toml. sounddevice is deliberately absent: only the
-    # terminal demo imports it, and it would need PortAudio for a code path that
-    # never runs on a server.
+    # Same pins and floors as pyproject.toml. aic-sdk is exact because it moves
+    # with TYTO_MODEL: 3.4.0 is the first SDK that loads Tyto 1.2 and cannot load
+    # 1.1. sounddevice is deliberately absent: only the terminal demo imports it,
+    # and it would need PortAudio for a code path that never runs on a server.
     .pip_install(
-        "aic-sdk>=3.2",
+        "aic-sdk==3.4.0",
         "numpy>=1.24",
         "aiohttp>=3.9",
         "websockets>=13",

@@ -910,7 +910,7 @@
   <div class="glow"></div>
   <header class="topbar">
     <a class="brand" href="https://ai-coustics.com" target="_blank" rel="noopener">
-      <span class="mark"></span>Tyto<span class="ver">1.1</span><span class="sub">— Audio Insights</span>
+      <span class="mark"></span>Tyto<span class="ver">1.2</span><span class="sub">— Audio Insights</span>
     </a>
     <nav>
       <button type="button" id="keys-btn" class="nav-btn">Enter keys</button>
@@ -1010,14 +1010,14 @@
   <audio id="remote" autoplay></audio>
 
   <script type="module">
-    const __WORKER_SRC__ = "// Tyto scoring worker \u00b7 runs the ai-coustics WASM SDK Analyzer off the UI thread.\n//\n// The page taps the mic at 16 kHz mono and streams Float32Array chunks here.\n// We feed them into the SDK Analyzer (which keeps its own rolling window) and\n// run analyze() every `hopMs`. Results go back as a flat snake_case metric\n// dict, mirroring what the old Python /tyto/score endpoint returned.\n//\n// Messages in:\n//   {type:\"init\", licenseKey, modelUrl, sampleRate, hopMs, windowSeconds}\n//   {type:\"audio\", chunk: Float32Array}    \u00b7 mic samples (transferred)\n//   {type:\"pause\"}                          \u00b7 agent speaking \u2192 drop audio, stop scoring\n//   {type:\"resume\"}                         \u00b7 user audio flowing again \u2192 reset + rewarm\n//   {type:\"stop\"}\n//\n// Messages out:\n//   {type:\"ready\", modelId, sdkVersion, blockSize}\n//   {type:\"scores\", scores: {risk_score, noise, \u2026}, analyzeMs}\n//   {type:\"error\", message}\n\n// SDK loaded straight from the public npm package via jsDelivr (pinned). The\n// glue resolves its companion .wasm relative to this URL, so there is nothing\n// to vendor \u2014 the wasm is fetched and CDN-cached on first load. 0.23 is the SDK\n// generation that runs Tyto 1.1: mono `buffer()` calls sized in samples instead\n// of the old interleaved frame API, and `codecDegradation` in place of\n// `mediaSpeech`.\nimport init, { Model, Analyzer, getVersion } from \"https://cdn.jsdelivr.net/npm/@ai-coustics/aic-sdk-wasm@0.23.0/aic_sdk_wasm.js\";\n\nlet analyzer = null;\nlet blockSize = 0;\nlet sampleRate = 16000;\nlet windowSamples = 0;\nlet buffered = 0;          // samples fed since the last reset (warm-up gate)\nlet paused = false;\nlet timer = null;\n\n// Sample queue: chunks arrive as 128-frame worklet quanta, the analyzer wants\n// fixed `blockSize` mono blocks. Leftovers wait for the next chunk.\nlet queue = new Float32Array(0);\n\nfunction enqueue(chunk) {\n  const merged = new Float32Array(queue.length + chunk.length);\n  merged.set(queue, 0);\n  merged.set(chunk, queue.length);\n  let offset = 0;\n  while (merged.length - offset >= blockSize) {\n    analyzer.buffer(merged.subarray(offset, offset + blockSize));\n    offset += blockSize;\n    buffered += blockSize;\n  }\n  queue = merged.slice(offset);\n}\n\nfunction tick() {\n  if (paused || !analyzer) return;\n  if (buffered < windowSamples) return;   // not enough real audio yet \u2192 don't score padded silence\n  const t0 = performance.now();\n  let result;\n  try {\n    result = analyzer.analyze();\n  } catch (err) {\n    postMessage({ type: \"error\", message: String(err) });\n    return;\n  }\n  const scores = {\n    risk_score: result.riskScore,\n    noise: result.noise,\n    speaker_reverb: result.speakerReverb,\n    speaker_loudness: result.speakerLoudness,\n    interfering_speech: result.interferingSpeech,\n    packet_loss: result.packetLoss,\n    codec_degradation: result.codecDegradation,\n  };\n  result.free();\n  postMessage({ type: \"scores\", scores, analyzeMs: Math.round(performance.now() - t0) });\n}\n\nself.onmessage = async (e) => {\n  const msg = e.data;\n  if (msg.type === \"init\") {\n    try {\n      await init();\n      const bytes = new Uint8Array(await (await fetch(msg.modelUrl)).arrayBuffer());\n      const model = Model.fromBytes(bytes);\n      sampleRate = msg.sampleRate;\n      blockSize = model.getOptimalBlockSize(sampleRate);\n      windowSamples = Math.round(msg.windowSeconds * sampleRate);\n      analyzer = new Analyzer(model, msg.licenseKey);\n      analyzer.initialize(sampleRate, blockSize, false);\n      postMessage({ type: \"ready\", modelId: model.getId(), sdkVersion: getVersion(), blockSize });\n      timer = setInterval(tick, msg.hopMs);\n    } catch (err) {\n      postMessage({ type: \"error\", message: String(err) });\n    }\n  } else if (msg.type === \"audio\") {\n    if (analyzer && !paused) enqueue(msg.chunk);\n  } else if (msg.type === \"pause\") {\n    paused = true;\n    queue = new Float32Array(0);\n  } else if (msg.type === \"resume\") {\n    // Stream discontinuity (mic was muted during agent speech): clear the\n    // analyzer's window so stale audio can't skew the next scores, then\n    // require a full window of fresh audio before scoring again.\n    if (analyzer) analyzer.reset();\n    queue = new Float32Array(0);\n    buffered = 0;\n    paused = false;\n  } else if (msg.type === \"stop\") {\n    if (timer) clearInterval(timer);\n    timer = null;\n    // Close the telemetry session on demand instead of waiting for the GC to\n    // collect the analyzer handle.\n    if (analyzer) { try { analyzer.terminateSession(); } catch { } analyzer.free(); analyzer = null; }\n    close();\n  }\n};\n";
+    const __WORKER_SRC__ = "// Tyto scoring worker \u00b7 runs the ai-coustics WASM SDK Analyzer off the UI thread.\n//\n// The page taps the mic at 16 kHz mono and streams Float32Array chunks here.\n// We feed them into the SDK Analyzer (which keeps its own rolling window) and\n// run analyze() every `hopMs`. Results go back as a flat snake_case metric\n// dict, mirroring what the old Python /tyto/score endpoint returned.\n//\n// Messages in:\n//   {type:\"init\", licenseKey, modelUrl, sampleRate, hopMs, windowSeconds}\n//   {type:\"audio\", chunk: Float32Array}    \u00b7 mic samples (transferred)\n//   {type:\"pause\"}                          \u00b7 agent speaking \u2192 drop audio, stop scoring\n//   {type:\"resume\"}                         \u00b7 user audio flowing again \u2192 reset + rewarm\n//   {type:\"stop\"}\n//\n// Messages out:\n//   {type:\"ready\", modelId, sdkVersion, blockSize}\n//   {type:\"scores\", scores: {risk_score, noise, \u2026}, analyzeMs}\n//   {type:\"error\", message}\n\n// SDK loaded straight from the public npm package via jsDelivr (pinned). The\n// glue resolves its companion .wasm relative to this URL, so there is nothing\n// to vendor \u2014 the wasm is fetched and CDN-cached on first load. 0.26 is the SDK\n// generation that runs Tyto 1.2 (model file version 8); 0.25 and older\n// refuse it. The Analyzer API is the one 0.23 introduced for Tyto 1.1:\n// mono `buffer()` calls sized in samples and `codecDegradation`.\nimport init, { Model, Analyzer, getVersion } from \"https://cdn.jsdelivr.net/npm/@ai-coustics/aic-sdk-wasm@0.26.0/aic_sdk_wasm.js\";\n\nlet analyzer = null;\nlet blockSize = 0;\nlet sampleRate = 16000;\nlet windowSamples = 0;\nlet buffered = 0;          // samples fed since the last reset (warm-up gate)\nlet paused = false;\nlet timer = null;\n\n// Sample queue: chunks arrive as 128-frame worklet quanta, the analyzer wants\n// fixed `blockSize` mono blocks. Leftovers wait for the next chunk.\nlet queue = new Float32Array(0);\n\nfunction enqueue(chunk) {\n  const merged = new Float32Array(queue.length + chunk.length);\n  merged.set(queue, 0);\n  merged.set(chunk, queue.length);\n  let offset = 0;\n  while (merged.length - offset >= blockSize) {\n    analyzer.buffer(merged.subarray(offset, offset + blockSize));\n    offset += blockSize;\n    buffered += blockSize;\n  }\n  queue = merged.slice(offset);\n}\n\nfunction tick() {\n  if (paused || !analyzer) return;\n  if (buffered < windowSamples) return;   // not enough real audio yet \u2192 don't score padded silence\n  const t0 = performance.now();\n  let result;\n  try {\n    result = analyzer.analyze();\n  } catch (err) {\n    postMessage({ type: \"error\", message: String(err) });\n    return;\n  }\n  const scores = {\n    risk_score: result.riskScore,\n    noise: result.noise,\n    speaker_reverb: result.speakerReverb,\n    speaker_loudness: result.speakerLoudness,\n    interfering_speech: result.interferingSpeech,\n    packet_loss: result.packetLoss,\n    codec_degradation: result.codecDegradation,\n  };\n  result.free();\n  postMessage({ type: \"scores\", scores, analyzeMs: Math.round(performance.now() - t0) });\n}\n\nself.onmessage = async (e) => {\n  const msg = e.data;\n  if (msg.type === \"init\") {\n    try {\n      await init();\n      const bytes = new Uint8Array(await (await fetch(msg.modelUrl)).arrayBuffer());\n      const model = Model.fromBytes(bytes);\n      sampleRate = msg.sampleRate;\n      blockSize = model.getOptimalBlockSize(sampleRate);\n      windowSamples = Math.round(msg.windowSeconds * sampleRate);\n      analyzer = new Analyzer(model, msg.licenseKey);\n      analyzer.initialize(sampleRate, blockSize, false);\n      postMessage({ type: \"ready\", modelId: model.getId(), sdkVersion: getVersion(), blockSize });\n      timer = setInterval(tick, msg.hopMs);\n    } catch (err) {\n      postMessage({ type: \"error\", message: String(err) });\n    }\n  } else if (msg.type === \"audio\") {\n    if (analyzer && !paused) enqueue(msg.chunk);\n  } else if (msg.type === \"pause\") {\n    paused = true;\n    queue = new Float32Array(0);\n  } else if (msg.type === \"resume\") {\n    // Stream discontinuity (mic was muted during agent speech): clear the\n    // analyzer's window so stale audio can't skew the next scores, then\n    // require a full window of fresh audio before scoring again.\n    if (analyzer) analyzer.reset();\n    queue = new Float32Array(0);\n    buffered = 0;\n    paused = false;\n  } else if (msg.type === \"stop\") {\n    if (timer) clearInterval(timer);\n    timer = null;\n    // Close the telemetry session on demand instead of waiting for the GC to\n    // collect the analyzer handle.\n    if (analyzer) { try { analyzer.terminateSession(); } catch { } analyzer.free(); analyzer = null; }\n    close();\n  }\n};\n";
     const __WORKER_URL__ = URL.createObjectURL(new Blob([__WORKER_SRC__], { type: "text/javascript" }));
     const $ = (id) => document.getElementById(id);
     const $status = $("status"), $mic = $("mic"), $log = $("log"), $audio = $("remote");
     const $userTx = $("user-tx"), $agentTx = $("agent-tx"), $banner = $("banner");
 
     // Scoring runs in the browser: the worker above hosts the WASM Analyzer
-    // (Tyto 1.1) and posts a score dict every hop. Tyto's analysis window is
+    // (Tyto 1.2) and posts a score dict every hop. Tyto's analysis window is
     // fixed at 5 s; the hop just sets the UI cadence.
     let TYTO_WINDOW_S = 5;
     let TYTO_HOP_MS = 1000;
@@ -1029,10 +1029,10 @@
     // are sent straight to OpenAI / ai-coustics over HTTPS. Nothing reaches us.
     const OPENAI_MODEL = "gpt-realtime-2.1";
     const OPENAI_VOICE = "alloy";
-    // Tyto 1.1 (model version 7). Fetched straight from the ai-coustics artifact
-    // CDN and handed to the worker as bytes.
+    // Tyto 1.2 (model file version 8, needs the 0.26 WASM SDK). Fetched straight
+    // from the ai-coustics artifact CDN and handed to the worker as bytes.
     const TYTO_MODEL_URL =
-      "https://artifacts.ai-coustics.io/models/tyto-1-1-l-16khz/v7/tyto_1_1_l_16khz_t7y7v3h5_v58.aicmodel";
+      "https://artifacts.ai-coustics.io/models/tyto-1-2-l-16khz/v8/tyto_1_2_l_16khz_ef8fy2t4_v65.aicmodel";
     const KEYS = {
       get openai() { return localStorage.getItem("aic_demo_openai_key") || ""; },
       get license() { return localStorage.getItem("aic_demo_license_key") || ""; },
@@ -1047,9 +1047,9 @@
       get present() { return !!(this.openai && this.license); },
     };
 
-    // The six Tyto 1.1 dimensions, in the docs' order. 1.1 folded the old
+    // The six Tyto dimensions, in the docs' order. 1.1 folded the old
     // background-media dimension into interfering_speech (any competing speech,
-    // live or from a TV / radio / phone) and added codec_degradation.
+    // live or from a TV / radio / phone) and added codec_degradation; 1.2 keeps them.
     const ENV_KEYS = ["noise", "speaker_reverb", "speaker_loudness",
       "interfering_speech", "packet_loss", "codec_degradation"];
     const ALL_KEYS = ENV_KEYS;
@@ -1135,7 +1135,7 @@
         advice: "Whole words may be missing, so confirm names, numbers and addresses by repeating them back, and allow longer pauses before assuming the user has finished.",
       },
       {
-        // Tyto 1.1 reports one interfering-speech dimension for live speakers and
+        // Tyto reports one interfering-speech dimension for live speakers and
         // media alike, and the docs advise not naming a source we cannot identify.
         key: "interfering_speech", thr: THRESHOLDS.interfering_speech[1],
         text: "Sorry, I am hearing other voices in the background. Could you move somewhere quieter, or turn down anything playing nearby?",
@@ -1210,9 +1210,8 @@
       "audio will cause failures in downstream models (voice activity detection, turn-taking, " +
       "speech-to-text, speech-to-speech) — and why. It runs on CPU, on-premise, with no audio leaving " +
       "your infrastructure; in this demo it runs entirely in your browser via the ai-coustics WASM SDK, " +
-      "scoring your microphone live. This demo runs Tyto 1.1, the current version: same 5 second windows " +
-      "of 16 kHz mono audio as the first release, but much smaller and faster (roughly 100 ms per window " +
-      "on a single CPU core and about 33 MB of memory), with better prediction of downstream failures.\n" +
+      "scoring your microphone live. This demo runs Tyto 1.2, the current version: it scores 5 second " +
+      "windows of 16 kHz mono audio, in about 200 ms per window right here in the browser.\n" +
       "• What it outputs: one Tyto Risk Score from 0 to 1 (higher means more likely to break downstream " +
       "models; indicative bands: under 0.30 is good, 0.30 to 0.50 is noticeable degradation, above 0.50 is " +
       "severe and worth intervening on), plus six dimensions that explain why: noise, speaker reverb, " +
@@ -1853,7 +1852,7 @@ registerProcessor("tap",Tap);`;
         await startTytoWorker();
         await startTap(micStream);
         connected = true; $mic.classList.add("live"); setStatus("live", "Live");
-        log("tyto.loading", { message: "WASM SDK + tyto-1.1-l-16khz loading in worker…" });
+        log("tyto.loading", { message: "WASM SDK + tyto-1.2-l-16khz loading in worker…" });
       } catch (err) {
         setStatus("error", "Error"); log("error", { message: String(err) }); stop();
       }

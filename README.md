@@ -6,7 +6,7 @@ On a bad call, people adapt: "Sorry, it's loud where you are. Could you move som
 
 ## What Tyto gives you
 
-Tyto (`tyto-1.1-l-16khz`) is the ai-coustics audio insight model. It scores the user's microphone in real time, per 5 second window. It runs on your CPU through the Python SDK, so no audio leaves your host for scoring.
+Tyto (`tyto-1.2-l-16khz`) is the ai-coustics audio insight model. It scores the user's microphone in real time, per 5 second window. It runs on your CPU through the Python SDK, so no audio leaves your host for scoring.
 
 Act on one number: `risk_score`, 0 to 1, the likelihood the audio makes your agent fail (below 0.30 good, 0.30 to 0.50 warn, above 0.50 bad). Six dimensions say why. The score decides when. The dimensions only pick the words:
 
@@ -88,7 +88,7 @@ split by job, mirroring the commented sections of the browser reference:
 
 You need an ai-coustics SDK license key from
 <https://developers.ai-coustics.com> (and an OpenAI key for the agent). The
-model (`tyto-1.1-l-16khz`) is downloaded from the ai-coustics CDN on first run
+model (`tyto-1.2-l-16khz`) is downloaded from the ai-coustics CDN on first run
 into `./models`. Put your keys in a `.env`; everything loads it automatically.
 
 ```bash

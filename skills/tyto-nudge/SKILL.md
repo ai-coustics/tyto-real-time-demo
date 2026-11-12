@@ -29,8 +29,8 @@ out through the agent.
 2. **Check versions.** Voice framework APIs change often. Look up the installed
    version's names in its source or docs. Do not rely on memory for frame,
    event or method names.
-3. **Tyto setup.** `aic-sdk>=3.1` in Python (Node, Rust, C, C++ and WASM SDKs
-   exist too), model `tyto-1.1-l-16khz`, key in `AIC_SDK_LICENSE`, kept on the
+3. **Tyto setup.** `aic-sdk==3.4.0` in Python (Node, Rust, C, C++ and WASM SDKs
+   exist too), model `tyto-1.2-l-16khz`, key in `AIC_SDK_LICENSE`, kept on the
    server. Current API:
    <https://docs.ai-coustics.com/models/audio-insight/real-time-analysis>.
    If the ai-coustics docs MCP is available, query it.
