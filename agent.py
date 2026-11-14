@@ -16,9 +16,12 @@ logger = logging.getLogger("aic-example")
 
 # The Tyto risk score alone decides when to nudge. 0.5 is the start of Tyto's
 # "higher risk" band; a quiet room stays around 0.0-0.25.
-RISK_THRESHOLD = 0.4  # compared against the smoothed risk
-SMOOTHING = 0.7  # weight of the newest score in the moving average; lower is smoother
+RISK_THRESHOLD = 0.5  # compared against the smoothed risk
+SMOOTHING = 0.3  # weight of the newest score in the moving average; lower is smoother
 ANALYSIS_INTERVAL = 1.0  # seconds between scores of the rolling 5 s window
+# Tyto 1.2 scores a partly filled window as high risk (mostly packet_loss), even on clean
+# audio. Ignore the scores of each new audio track until the 5 s window is full.
+WARMUP_RESULTS = 5
 NUDGE_COOLDOWN = 60.0  # seconds between nudges
 
 RECORDINGS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings")
@@ -93,11 +96,23 @@ async def entrypoint(ctx: JobContext):
 
     smoothed_risk = 0.0
     last_nudge = 0.0
+    track_sid = None
+    warmup_left = WARMUP_RESULTS
 
     @analyzer.on("analysis_result")
     def on_analysis(event):
-        nonlocal smoothed_risk, last_nudge
+        nonlocal smoothed_risk, last_nudge, track_sid, warmup_left
         result = event.result
+        # The collector restarts its window when the caller's track changes.
+        if event.publication_sid != track_sid:
+            track_sid = event.publication_sid
+            warmup_left = WARMUP_RESULTS
+            smoothed_risk = 0.0
+        if warmup_left > 0:
+            warmup_left -= 1
+            logger.info("Tyto #%d risk=%.2f -> warm-up", event.sequence, result.risk_score)
+            return
+
         # A moving average, so one risky second does not trigger a nudge on its own.
         smoothed_risk = SMOOTHING * result.risk_score + (1 - SMOOTHING) * smoothed_risk
         cause = top_cause(result)

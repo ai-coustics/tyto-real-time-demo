@@ -22,17 +22,21 @@ Source of truth: https://docs.ai-coustics.com/models/get-started/livekit-quickst
 
 Pinned versions known to work together:
 
-- Python 3.11: `ai-coustics-livekit-extras==0.25.2`, `aic-sdk==3.3.2`, `livekit-agents==1.8.2`
-- Node 24: `@ai-coustics/livekit-extras@0.25.2`, `@ai-coustics/aic-sdk@0.25.2`, `@livekit/agents@1.9.0`
+- Python 3.11: `ai-coustics-livekit-extras==0.26.0`, `aic-sdk==3.4.0`, `livekit-agents==1.8.2`
+- Node 24: `@ai-coustics/livekit-extras@0.26.0`, `@ai-coustics/aic-sdk@0.26.0`, `@livekit/agents@1.9.0`
+
+These wrap core SDK 0.26.0, which loads Tyto 1.2 only (model file format 8).
 
 Add `AIC_SDK_LICENSE` to the env file the project already loads (key from https://developers.ai-coustics.com/). Never hardcode it or put it in client code.
 
 Download models into `models/` (add `models/` to `.gitignore`):
 
 ```sh
-python -c 'from aic_sdk import Model; from shutil import copyfile; copyfile(Model.download("tyto-1.1-l-16khz", "models"), "models/tyto.aicmodel")'
+python -c 'from aic_sdk import Model; from shutil import copyfile; copyfile(Model.download("tyto-1.2-l-16khz", "models"), "models/tyto.aicmodel")'
 python -c 'from aic_sdk import Model; from shutil import copyfile; copyfile(Model.download("vad-ms-2.1-xxs-16khz", "models"), "models/vad.aicmodel")'
 ```
+
+If the project already has models from an older SDK (Tyto 1.1, livekit-extras 0.25.x), download both again. The VAD keeps its ID but the old file fails with `ModelVersionUnsupportedError`.
 
 ## 3. Wire Tyto into RoomIO (the two Tyto parts)
 
@@ -56,12 +60,13 @@ Subscribe with `@analyzer.on("analysis_result")`. `event.result` carries `risk_s
 Use this logic (match the user's code style):
 
 - The Tyto `risk_score` is the ONLY trigger. Do not trigger on `noise`, `interfering_speech` or any other single dimension.
-- Constants: `RISK_THRESHOLD = 0.4`, `SMOOTHING = 0.7`, `ANALYSIS_INTERVAL = 1.0`, `NUDGE_COOLDOWN = 60.0` seconds. 0.5 is the start of Tyto's "higher risk" band; a quiet room stays around 0.0 to 0.25.
-- Smooth with a moving average on every result: `smoothed = SMOOTHING * risk_score + (1 - SMOOTHING) * smoothed`. Nudge when `smoothed > RISK_THRESHOLD` and the cooldown has passed. One risky second does not trigger on its own; sustained risk triggers within about 2 s. Lower `SMOOTHING` for a calmer trigger.
-- Log one line per result with the raw risk, the smoothed risk and the decision (`ok`, `cooldown (Ns left)` or `nudge (cause)`), so the user can see why it did or did not nudge.
+- Constants: `RISK_THRESHOLD = 0.4`, `SMOOTHING = 0.3`, `ANALYSIS_INTERVAL = 1.0`, `WARMUP_RESULTS = 5`, `NUDGE_COOLDOWN = 60.0` seconds. 0.5 is the start of Tyto's "higher risk" band; a quiet room stays around 0.0 to 0.25.
+- Warm-up: ignore the first `WARMUP_RESULTS` results of each audio track (log them as `warm-up`). Tyto 1.2 scores a partly filled 5 s window as high risk, mostly `packet_loss`, even on clean audio; without this the agent says "your audio is breaking up" in the first seconds of most calls. The window restarts when the caller's track changes, so restart the warm-up (and reset the smoothed risk) when `event.publication_sid` changes.
+- Smooth with a moving average on every scored result: `smoothed = SMOOTHING * risk_score + (1 - SMOOTHING) * smoothed`. Nudge when `smoothed > RISK_THRESHOLD` and the cooldown has passed. Tyto 1.2 has single-second spikes to 0.7-0.85 on calm audio; at `SMOOTHING = 0.3` one spike does not trigger, while sustained risk triggers within about 2 to 4 s. Raise `SMOOTHING` for a faster, jumpier trigger.
+- Log one line per result with the raw risk, the smoothed risk and the decision (`warm-up`, `ok`, `cooldown (Ns left)` or `nudge (cause)`), so the user can see why it did or did not nudge.
 - Wording only: pick the highest of `interfering_speech`, `noise`, `speaker_reverb`, `packet_loss`, `codec_degradation` and speak a fixed line for it (pause the podcast, move somewhere quieter, move closer to the mic, check the connection). Skip `speaker_loudness`; higher is not worse. This avoids "I hear people talking" when the cause is noise.
 - Barge in, whatever the agent or user is doing: `session.interrupt(force=True)` then `session.say(line, allow_interruptions=False)`. `say` skips the LLM and adds the line to the chat context. Interruptions must be off or the background audio cuts the nudge off. Do not wait for user silence; background audio keeps the VAD in "speaking".
-- Keep state (smoothed risk, last nudge time) inside the per-room entrypoint, never at module level.
+- Keep state (smoothed risk, last nudge time, warm-up count and track sid) inside the per-room entrypoint, never at module level.
 
 ## 6. Record the call (optional)
 
@@ -72,7 +77,7 @@ Use this logic (match the user's code style):
 - Run `python agent.py dev` (or `lk agent dev` with the LiveKit CLI), then open your project's Agents dashboard, pick `aic-tyto-demo` and click Launch Console. Agent Console joins a real room, so audio goes through RoomIO and the collector. Needs `livekit-agents` 1.5.2 or later.
 - Do not use CLI `console` mode (`python agent.py console`): it skips RoomIO, so Tyto gets no audio there. Agent Console (browser) and console mode (terminal) are different tools.
 - Use the Console's Audio pane to confirm your mic reaches the agent and the Events pane to see the nudge reply. Tyto scores are in the worker logs, not in the Console.
-- About a second after you start talking, a `Tyto #N risk=... smoothed=... -> ok` line appears every second. No lines means the collector is not in RoomIO.
+- About a second after audio reaches the agent, a `Tyto #N ...` line appears every second: 5 `-> warm-up` lines, then `risk=... smoothed=... -> ok`. No lines means the collector is not in RoomIO.
 - Stay quiet for a minute: `smoothed` stays well under 0.4 and the agent never nudges.
 - Play a podcast next to the mic: within a few seconds `smoothed` crosses 0.4 and the agent cuts in, even mid-sentence, asking to pause it (the highest dimension should be `interfering_speech`), then logs `cooldown` for 60 s.
 - Disconnect and start a new room: scores resume without errors.
