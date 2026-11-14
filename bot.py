@@ -27,13 +27,32 @@ load_dotenv(".env.local")
 # The Tyto risk score alone decides when to nudge. 0.5 is the start of Tyto's
 # "higher risk" band; a quiet room stays around 0.0-0.25.
 RISK_THRESHOLD = 0.4  # compared against the smoothed risk
-SMOOTHING = 0.7  # weight of the newest score in the moving average; lower is smoother
-ANALYSIS_HOP = 1.0  # seconds between scores of the rolling 5 s window
+# Weight of the newest score in the moving average; lower is smoother. Tyto 1.2 throws
+# single-second spikes up to about 0.85 on calm audio; at 0.3 one spike stays under
+# the threshold and it takes 2-3 risky seconds in a row to nudge.
+SMOOTHING = 0.3
+ANALYSIS_HOP = 1.0  # seconds between scores of the rolling window
+TYTO_WINDOW = 5.0  # seconds of audio in each Tyto score
 NUDGE_COOLDOWN = 60.0  # seconds between nudges
 
-# Pipecat 1.15.0 scores every 5 s and has no option to change that, so this overrides
+# Pipecat 1.16.0 scores every 5 s and has no option to change that, so this overrides
 # the observer's private interval. Tyto still scores the latest 5 s, just every second.
 aic_tyto_observer._TYTO_WINDOW_SECS = ANALYSIS_HOP
+
+
+class RollingTytoObserver(AICTytoObserver):
+    """AICTytoObserver that waits for a full 5 s window before its first score.
+
+    The stock observer does this at its 5 s interval, but with the interval override
+    above it would first score after 1 s. Tyto pads a shorter window with silence, and
+    Tyto 1.2 reads that as packet loss (risk 0.6-0.8 on clean audio), which would nudge
+    in the first seconds and count as degraded in the call summary. Relies on private
+    names of Pipecat 1.16.0.
+    """
+
+    def _reset_session(self):
+        super()._reset_session()
+        self._next_analysis_secs = TYTO_WINDOW
 
 # After the call: flag it when 20% or more of its windows had a risk of 0.3 or more.
 DEGRADED_THRESHOLD = 0.3
@@ -82,7 +101,7 @@ async def bot(runner_args: RunnerArguments):
     )
     tts = DeepgramTTSService(api_key=os.environ["DEEPGRAM_API_KEY"])
 
-    tyto = AICTytoObserver(license_key=key, degraded_threshold=DEGRADED_THRESHOLD)
+    tyto = RollingTytoObserver(license_key=key, degraded_threshold=DEGRADED_THRESHOLD)
 
     # Records the call in stereo: the user's raw mic (what Tyto scores) left, the bot right.
     recorder = AudioBufferProcessor(num_channels=2, auto_start_recording=True)
